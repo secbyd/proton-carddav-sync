@@ -48,7 +48,8 @@ func (c *Client) ListContacts(ctx context.Context) ([]proton.Contact, error) {
 	return out, nil
 }
 
-// GetContactVCard returns the decrypted vCard string for contactID.
+// GetContactVCard returns the decrypted/merged vCard string for contactID.
+// Cards.Merge handles the bitmask-based encrypted+signed card types.
 func (c *Client) GetContactVCard(ctx context.Context, id string) (string, error) {
 	raw, err := c.Raw()
 	if err != nil {
@@ -64,17 +65,21 @@ func (c *Client) GetContactVCard(ctx context.Context, id string) (string, error)
 		return "", fmt.Errorf("get proton contact %q: %w", id, err)
 	}
 
-	for _, card := range contact.Cards {
-		if card.Type == proton.CardTypeSigned || card.Type == proton.CardTypeEncryptedAndSigned {
-			decrypted, err := card.Decrypt(kr)
-			if err != nil {
-				return "", fmt.Errorf("decrypt contact card %q: %w", id, err)
-			}
-			return decrypted, nil
-		}
+	// Cards.Merge decodes all card types (plain, signed, encrypted, encrypted+signed)
+	// using the bitmask flags CardTypeEncrypted and CardTypeSigned.
+	vcardData, err := contact.Cards.Merge(kr)
+	if err != nil {
+		return "", fmt.Errorf("decode contact cards %q: %w", id, err)
 	}
 
-	return contact.Cards[0].Data, nil
+	// Encode the merged vcard.Card back to string.
+	import "bytes"
+	import govcard "github.com/emersion/go-vcard"
+	var buf bytes.Buffer
+	if err := govcard.NewEncoder(&buf).Encode(vcardData); err != nil {
+		return "", fmt.Errorf("encode contact vcard %q: %w", id, err)
+	}
+	return buf.String(), nil
 }
 
 // CreateContact creates a new Proton contact from a vCard string.
@@ -85,9 +90,10 @@ func (c *Client) CreateContact(ctx context.Context, vcard string) (string, error
 		return "", err
 	}
 
+	// proton.Cards is []*proton.Card; proton.CardTypeClear is the unencrypted type.
 	req := proton.CreateContactsReq{
 		Contacts: []proton.ContactCards{
-			{Cards: []proton.Card{{Type: proton.CardTypeCleartext, Data: vcard}}},
+			{Cards: proton.Cards{&proton.Card{Type: proton.CardTypeClear, Data: vcard}}},
 		},
 	}
 
@@ -98,7 +104,8 @@ func (c *Client) CreateContact(ctx context.Context, vcard string) (string, error
 	if len(resps) == 0 {
 		return "", fmt.Errorf("create proton contact: empty response")
 	}
-	return resps[0].Contact.ID, nil
+	// CreateContactsRes wraps the per-contact result in Response.Contact.
+	return resps[0].Response.Contact.ID, nil
 }
 
 // UpdateContact replaces an existing Proton contact's vCard content.
@@ -109,7 +116,7 @@ func (c *Client) UpdateContact(ctx context.Context, id, vcard string) error {
 	}
 
 	req := proton.UpdateContactReq{
-		Cards: []proton.Card{{Type: proton.CardTypeCleartext, Data: vcard}},
+		Cards: proton.Cards{&proton.Card{Type: proton.CardTypeClear, Data: vcard}},
 	}
 
 	if _, err := raw.UpdateContact(ctx, id, req); err != nil {
@@ -125,7 +132,8 @@ func (c *Client) DeleteContact(ctx context.Context, id string) error {
 		return err
 	}
 
-	req := proton.DeleteContactsReq{ContactIDs: []string{id}}
+	// DeleteContactsReq.IDs is the correct field name (not ContactIDs).
+	req := proton.DeleteContactsReq{IDs: []string{id}}
 	if err := raw.DeleteContacts(ctx, req); err != nil {
 		return fmt.Errorf("delete proton contact %q: %w", id, err)
 	}

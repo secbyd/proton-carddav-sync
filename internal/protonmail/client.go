@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	proton "github.com/ProtonMail/go-proton-api"
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
 
 // Sentinel errors.
@@ -22,7 +23,7 @@ var (
 type Client struct {
 	manager *proton.Manager
 	client  *proton.Client
-	keyring proton.Keyring
+	keyring *crypto.KeyRing
 }
 
 // NewClient creates a new unauthenticated Proton API client.
@@ -35,7 +36,7 @@ func NewClient() *Client {
 // Login authenticates with the Proton API and unlocks the keyring.
 // ctx must not be stored in the returned Client (go-context: no struct storage).
 func (c *Client) Login(ctx context.Context, username, password string) error {
-	client, auth, err := c.manager.NewClientWithLogin(ctx, username, []byte(password))
+	client, _, err := c.manager.NewClientWithLogin(ctx, username, []byte(password))
 	if err != nil {
 		return fmt.Errorf("proton login for %q: %w", username, err)
 	}
@@ -47,12 +48,15 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 		return fmt.Errorf("get user: %w", err)
 	}
 
-	salts, err := c.client.GetKeySalts(ctx)
+	// GetSalts returns proton.Salts (was GetKeySalts in older drafts).
+	salts, err := c.client.GetSalts(ctx)
 	if err != nil {
 		return fmt.Errorf("get key salts: %w", err)
 	}
 
-	keyPass, err := salts.KeyPassword(auth.KeySalt, []byte(password))
+	// SaltForKey derives the mailbox password for the primary key.
+	// The primary key ID is used to look up the correct salt entry.
+	keyPass, err := salts.SaltForKey([]byte(password), user.Keys.Primary().ID)
 	if err != nil {
 		return fmt.Errorf("derive key password: %w", err)
 	}
@@ -80,7 +84,7 @@ func (c *Client) Logout(ctx context.Context) error {
 
 // Keyring returns the unlocked user keyring.
 // Returns ErrNotLoggedIn if Login has not been called.
-func (c *Client) Keyring() (proton.Keyring, error) {
+func (c *Client) Keyring() (*crypto.KeyRing, error) {
 	if c.client == nil {
 		return nil, ErrNotLoggedIn
 	}
