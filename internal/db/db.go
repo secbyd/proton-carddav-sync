@@ -19,11 +19,18 @@ var (
 )
 
 // Credentials holds the encrypted credential material persisted to SQLite.
-// Both passwords are encrypted with a key derived from PCS_ENCRYPTION_KEY and
-// the stored Salt; the key itself is never persisted.
+//
+// Instead of the Proton account password, a long-lasting session is stored
+// (UID + rotating refresh token + the derived mailbox/key password), so the
+// daemon resumes the session via refresh token without ever holding the
+// account password — the same approach used by hydroxide/ferroxide. Every
+// field is encrypted with a key derived from PCS_ENCRYPTION_KEY and the stored
+// Salt; the key itself is never persisted.
 type Credentials struct {
 	Salt               []byte
-	ProtonPasswordEnc  []byte
+	ProtonUIDEnc       []byte
+	ProtonRefreshEnc   []byte
+	ProtonKeyPassEnc   []byte
 	CardDAVPasswordEnc []byte
 }
 
@@ -50,7 +57,9 @@ func migrate(db *sql.DB) error {
 CREATE TABLE IF NOT EXISTS credentials (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
     salt                 BLOB    NOT NULL,
-    proton_password_enc  BLOB    NOT NULL DEFAULT x'',
+    proton_uid_enc       BLOB    NOT NULL DEFAULT x'',
+    proton_refresh_enc   BLOB    NOT NULL DEFAULT x'',
+    proton_keypass_enc   BLOB    NOT NULL DEFAULT x'',
     carddav_password_enc BLOB    NOT NULL
 );
 
@@ -65,12 +74,14 @@ CREATE TABLE IF NOT EXISTS contacts (
 		return fmt.Errorf("exec schema: %w", err)
 	}
 
-	// Forward-compat: add proton_password_enc to databases created before it
-	// existed. ALTER TABLE ADD COLUMN errors if the column is already present,
-	// so check the table definition first.
-	if err := ensureColumn(db, "credentials", "proton_password_enc",
-		"ALTER TABLE credentials ADD COLUMN proton_password_enc BLOB NOT NULL DEFAULT x''"); err != nil {
-		return err
+	// Forward-compat: add the Proton session columns to databases created under
+	// an older schema. ALTER TABLE ADD COLUMN errors if the column already
+	// exists, so each is guarded by a table-definition check.
+	for _, col := range []string{"proton_uid_enc", "proton_refresh_enc", "proton_keypass_enc"} {
+		if err := ensureColumn(db, "credentials", col,
+			fmt.Sprintf("ALTER TABLE credentials ADD COLUMN %s BLOB NOT NULL DEFAULT x''", col)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -111,15 +122,30 @@ func ensureColumn(db *sql.DB, table, column, alterStmt string) error {
 // SaveCredentials upserts the encrypted credential material.
 func SaveCredentials(ctx context.Context, db *sql.DB, creds Credentials) error {
 	const q = `
-INSERT INTO credentials (id, salt, proton_password_enc, carddav_password_enc)
-VALUES (1, ?, ?, ?)
+INSERT INTO credentials (id, salt, proton_uid_enc, proton_refresh_enc, proton_keypass_enc, carddav_password_enc)
+VALUES (1, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     salt                 = excluded.salt,
-    proton_password_enc  = excluded.proton_password_enc,
+    proton_uid_enc       = excluded.proton_uid_enc,
+    proton_refresh_enc   = excluded.proton_refresh_enc,
+    proton_keypass_enc   = excluded.proton_keypass_enc,
     carddav_password_enc = excluded.carddav_password_enc`
 
-	if _, err := db.ExecContext(ctx, q, creds.Salt, creds.ProtonPasswordEnc, creds.CardDAVPasswordEnc); err != nil {
+	if _, err := db.ExecContext(ctx, q,
+		creds.Salt, creds.ProtonUIDEnc, creds.ProtonRefreshEnc, creds.ProtonKeyPassEnc, creds.CardDAVPasswordEnc,
+	); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
+	}
+	return nil
+}
+
+// UpdateProtonRefresh persists a rotated Proton refresh token (already
+// encrypted). Proton rotates the refresh token on every session resume, so the
+// daemon must write the new value back or the next start will fail.
+func UpdateProtonRefresh(ctx context.Context, db *sql.DB, refreshEnc []byte) error {
+	const q = `UPDATE credentials SET proton_refresh_enc = ? WHERE id = 1`
+	if _, err := db.ExecContext(ctx, q, refreshEnc); err != nil {
+		return fmt.Errorf("update proton refresh token: %w", err)
 	}
 	return nil
 }
@@ -127,10 +153,11 @@ ON CONFLICT(id) DO UPDATE SET
 // LoadCredentials retrieves the stored credential material.
 // It returns ErrCredentialsNotFound when no row exists.
 func LoadCredentials(ctx context.Context, db *sql.DB) (Credentials, error) {
-	const q = `SELECT salt, proton_password_enc, carddav_password_enc FROM credentials WHERE id = 1`
+	const q = `SELECT salt, proton_uid_enc, proton_refresh_enc, proton_keypass_enc, carddav_password_enc FROM credentials WHERE id = 1`
 
 	var c Credentials
-	err := db.QueryRowContext(ctx, q).Scan(&c.Salt, &c.ProtonPasswordEnc, &c.CardDAVPasswordEnc)
+	err := db.QueryRowContext(ctx, q).Scan(
+		&c.Salt, &c.ProtonUIDEnc, &c.ProtonRefreshEnc, &c.ProtonKeyPassEnc, &c.CardDAVPasswordEnc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Credentials{}, ErrCredentialsNotFound
 	}

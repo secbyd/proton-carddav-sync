@@ -45,26 +45,35 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	}
 	defer sqlDB.Close()
 
-	protonPass, carddavPass, err := syncer.LoadDecryptedCredentials(ctx, sqlDB)
+	creds, err := syncer.LoadDecryptedCredentials(ctx, sqlDB)
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
 
-	protonClient := protonmail.NewClient()
+	protonClient := protonmail.NewClient(cfg.Proton.AppVersion)
 
-	// loginErr uses a distinct name to avoid shadowing the outer err.
-	if loginErr := protonClient.Login(ctx, cfg.Proton.Username, protonPass); loginErr != nil {
-		return fmt.Errorf("proton login: %w", loginErr)
-	}
-	defer func() {
-		// Pass ctx so the contextcheck linter is satisfied; Logout uses
-		// a background-style context internally when the parent is done.
-		if logoutErr := protonClient.Logout(ctx); logoutErr != nil {
-			log.Warn("proton logout failed", "err", logoutErr)
+	// Persist rotated refresh tokens so the next run can resume. Rotation only
+	// happens during live API calls (which share ctx), so propagating ctx here
+	// is correct.
+	onRefresh := func(token string) {
+		enc, encErr := creds.EncryptRefreshToken(token)
+		if encErr != nil {
+			log.Warn("encrypt rotated proton refresh token failed", "err", encErr)
+			return
 		}
-	}()
+		if upErr := db.UpdateProtonRefresh(ctx, sqlDB, enc); upErr != nil {
+			log.Warn("persist rotated proton refresh token failed", "err", upErr)
+		}
+	}
 
-	carddavClient, cdErr := carddav.New(ctx, cfg.CardDAV.URL, cfg.CardDAV.Username, carddavPass)
+	if resumeErr := protonClient.ResumeSession(ctx, creds.Session, onRefresh); resumeErr != nil {
+		return fmt.Errorf("resume proton session: %w", resumeErr)
+	}
+	// go-defensive: Close drops local state without revoking the session, so
+	// the stored refresh token stays valid for the next run.
+	defer protonClient.Close()
+
+	carddavClient, cdErr := carddav.New(ctx, cfg.CardDAV.URL, cfg.CardDAV.Username, creds.CardDAVPass)
 	if cdErr != nil {
 		return fmt.Errorf("create carddav client: %w", cdErr)
 	}

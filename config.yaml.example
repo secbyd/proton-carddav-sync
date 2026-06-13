@@ -1,14 +1,23 @@
 # proton-carddav-sync configuration
-# Copy to ~/.config/proton-carddav-sync/config.yaml and edit.
 #
-# Passwords are NOT stored here. Run `proton-carddav-sync init` once: it prompts
-# for the Proton and CardDAV passwords and stores them encrypted in the SQLite
-# database. The encryption key comes from the PCS_ENCRYPTION_KEY environment
-# variable, which both `init` and the daemon must share.
+# You normally do NOT write this file by hand: running `proton-carddav-sync init`
+# with no config present prompts for every setting below and writes it for you.
+# Copy this example to ~/.config/proton-carddav-sync/config.yaml only if you
+# prefer to edit it manually.
+#
+# No passwords or secrets live here. `init` logs in to Proton (prompting for a
+# TOTP code if 2FA is enabled), then stores an encrypted, long-lasting Proton
+# session and the CardDAV password in the SQLite database. The encryption key
+# comes from the PCS_ENCRYPTION_KEY environment variable, which both `init` and
+# the daemon must share.
 
 proton:
   # Proton Mail username (email address).
   username: "user@proton.me"
+  # x-pm-appversion sent to the Proton API. The library default is rejected by
+  # Proton, so a web-client-like value is required. Override at runtime with the
+  # PCS_PROTON_APP_VERSION environment variable if Proton stops accepting this.
+  app_version: "web-mail@5.0.999.0"
 
 carddav:
   # Full CardDAV collection URL,

@@ -23,36 +23,46 @@ A lightweight Go daemon that keeps your **Proton Mail contacts** in sync with an
 git clone https://github.com/secbyd/proton-carddav-sync
 cd proton-carddav-sync
 
-# 2. Copy and edit config
-mkdir -p ~/.config/proton-carddav-sync
-cp config.yaml.example ~/.config/proton-carddav-sync/config.yaml
-$EDITOR ~/.config/proton-carddav-sync/config.yaml
-
-# 3. Build (uses the committed vendor/ tree; no extra setup needed)
+# 2. Build (uses the committed vendor/ tree; no extra setup needed)
 go build -o proton-carddav-sync ./cmd/proton-carddav-sync
 
-# 4. Store encrypted credentials
-#    PCS_ENCRYPTION_KEY is the master key that encrypts every credential at
-#    rest (Proton + CardDAV passwords). Pick a long, random value and keep it
-#    secret — the daemon needs the same value to decrypt.
+# 3. Initialise — creates the config and stores an encrypted session
+#    PCS_ENCRYPTION_KEY is the master key that encrypts everything at rest
+#    (the Proton session + CardDAV password). Pick a long, random value and keep
+#    it secret — the daemon needs the same value to decrypt.
+#
+#    With no config present, `init` prompts for every setting and writes
+#    config.yaml, then logs in to Proton (asking for a TOTP code if 2FA is on)
+#    and stores a long-lasting session — so the daemon never needs your Proton
+#    password again. No passwords are written to config.yaml.
 export PCS_ENCRYPTION_KEY="a-long-random-passphrase"
 ./proton-carddav-sync init
 
-# 5. One-shot sync (test) — same key decrypts the stored credentials
+# 4. One-shot sync (test) — resumes the stored session
 PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync sync
 
-# 6. Start daemon
+# 5. Start daemon
 PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync run
 ```
 
+> **Credential model.** Inspired by [hydroxide](https://github.com/emersion/hydroxide)
+> and ferroxide, `init` exchanges your password for a durable Proton session
+> (UID + a rotating refresh token + the derived mailbox key) rather than keeping
+> the password. That session and the CardDAV password are encrypted with a key
+> derived from `PCS_ENCRYPTION_KEY` (PBKDF2) and stored in SQLite — never in
+> `config.yaml`. The daemon resumes the session via the refresh token, which it
+> rotates and re-stores on each run.
+
 ## Configuration
 
-All settings live in `~/.config/proton-carddav-sync/config.yaml`.
-See [`config.yaml.example`](config.yaml.example) for an annotated reference.
+All settings live in `~/.config/proton-carddav-sync/config.yaml`, which
+`init` creates for you (or copy [`config.yaml.example`](config.yaml.example) and
+edit it by hand). No secrets are stored in this file.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `proton.username` | — | Proton Mail email address |
+| `proton.app_version` | `web-mail@5.0.999.0` | `x-pm-appversion` sent to the Proton API (override with `PCS_PROTON_APP_VERSION`) |
 | `carddav.url` | — | Full CardDAV collection URL |
 | `carddav.username` | — | CardDAV username |
 | `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
@@ -60,6 +70,13 @@ See [`config.yaml.example`](config.yaml.example) for an annotated reference.
 | `database.path` | `~/.local/share/…/sync.db` | SQLite state database path |
 | `log.level` | `info` | `debug` / `info` / `warn` / `error` |
 | `log.format` | `text` | `text` / `json` |
+
+### Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PCS_ENCRYPTION_KEY` | yes | Master key that encrypts the stored Proton session and CardDAV password. The same value must be set for `init` and the daemon. |
+| `PCS_PROTON_APP_VERSION` | no | Overrides `proton.app_version` at runtime, for tracking Proton's accepted client versions without editing the config. |
 
 ## Systemd Unit
 
