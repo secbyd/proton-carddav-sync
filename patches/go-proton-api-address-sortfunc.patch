@@ -1,6 +1,6 @@
 --- a/address.go
 +++ b/address.go
-@@ -1,9 +1,10 @@
+@@ -1,8 +1,9 @@
  package proton
  
  import (
@@ -11,9 +11,7 @@
 +	"cmp"
 +	"slices"
  )
- 
- func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
-@@ -18,8 +19,8 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
+@@ -20,7 +21,7 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
  	}); err != nil {
  		return nil, err
  	}
@@ -23,5 +21,3 @@
 +	slices.SortFunc(res.Addresses, func(a, b Address) int {
 +		return cmp.Compare(a.Order, b.Order)
  	})
- 
- 	return res.Addresses, nil
