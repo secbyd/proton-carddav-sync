@@ -42,9 +42,10 @@ type CardDAVConfig struct {
 }
 
 // SyncConfig holds synchronisation behaviour settings.
+// string before int for optimal field alignment.
 type SyncConfig struct {
-	IntervalSeconds int    `mapstructure:"interval_seconds"`
 	Direction       string `mapstructure:"direction"`
+	IntervalSeconds int    `mapstructure:"interval_seconds"`
 }
 
 // DatabaseConfig holds SQLite storage settings.

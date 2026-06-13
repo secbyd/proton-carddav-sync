@@ -21,17 +21,12 @@ import (
 type Direction int
 
 const (
-	// DirectionBoth syncs in both directions.
-	DirectionBoth Direction = iota + 1 // go-defensive: iota+1 so zero == uninitialized
-	// DirectionToCardDAV only pushes Proton contacts to CardDAV.
-	DirectionToCardDAV
-	// DirectionToProton only pushes CardDAV contacts to Proton.
-	DirectionToProton
+	DirectionBoth      Direction = iota + 1
+	DirectionToCardDAV Direction = iota + 1
+	DirectionToProton  Direction = iota + 1
 )
 
 // Syncer orchestrates contact synchronisation.
-// It does not store a context — contexts are passed to each method
-// (go-context: never store context in a struct).
 type Syncer struct {
 	proton  protonmail.ContactsClient
 	carddav carddav.ContactsClient
@@ -41,7 +36,6 @@ type Syncer struct {
 }
 
 // New constructs a Syncer.
-// Accepts interfaces (go-interfaces: accept interfaces, return concrete types).
 func New(
 	protonClient protonmail.ContactsClient,
 	carddavClient carddav.ContactsClient,
@@ -80,34 +74,32 @@ func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
 	}
 
 	for _, c := range contacts {
-		// go-context: check cancellation in loops.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		vcardStr, err := s.proton.GetContactVCard(ctx, c.ID)
-		if err != nil {
-			// go-logging: warn and skip per-contact errors (log OR return, not both).
+		vcardStr, vcErr := s.proton.GetContactVCard(ctx, c.ID)
+		if vcErr != nil {
 			s.log.Warn("skip proton contact: get vcard failed",
-				"contact_id", c.ID, "err", err)
+				"contact_id", c.ID, "err", vcErr)
 			continue
 		}
 
 		uid := extractUID(vcardStr, c.ID)
 
-		if err := s.carddav.PutContact(ctx, uid, vcardStr); err != nil {
-			return fmt.Errorf("put carddav contact %q: %w", uid, err)
+		if putErr := s.carddav.PutContact(ctx, uid, vcardStr); putErr != nil {
+			return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
 		}
 
 		s.log.Info("synced proton→carddav", "uid", uid)
 
-		if err := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
+		if upsertErr := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
 			UID:       uid,
 			VCardHash: hashString(vcardStr),
-		}); err != nil {
-			return fmt.Errorf("upsert local contact %q: %w", uid, err)
+		}); upsertErr != nil {
+			return fmt.Errorf("upsert local contact %q: %w", uid, upsertErr)
 		}
 	}
 	return nil
@@ -126,43 +118,41 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		default:
 		}
 
-		// obj.Card is a vcard.Card (already parsed by go-webdav).
-		// Encode it back to a string for storage and hashing.
 		var buf bytes.Buffer
-		if err := vcard.NewEncoder(&buf).Encode(obj.Card); err != nil {
+		if encErr := vcard.NewEncoder(&buf).Encode(obj.Card); encErr != nil {
 			s.log.Warn("skip carddav contact: encode vcard failed",
-				"path", obj.Path, "err", err)
+				"path", obj.Path, "err", encErr)
 			continue
 		}
 		vcardStr := buf.String()
 		uid := extractUID(vcardStr, obj.Path)
 
-		rec, err := dbpkg.GetContact(ctx, s.db, uid)
+		rec, getErr := dbpkg.GetContact(ctx, s.db, uid)
 		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			if _, err := s.proton.CreateContact(ctx, vcardStr); err != nil {
-				return fmt.Errorf("create proton contact %q: %w", uid, err)
+		case errors.Is(getErr, sql.ErrNoRows):
+			if _, createErr := s.proton.CreateContact(ctx, vcardStr); createErr != nil {
+				return fmt.Errorf("create proton contact %q: %w", uid, createErr)
 			}
-		case err != nil:
-			return fmt.Errorf("get local contact %q: %w", uid, err)
+		case getErr != nil:
+			return fmt.Errorf("get local contact %q: %w", uid, getErr)
 		default:
 			newHash := hashString(vcardStr)
 			if rec.VCardHash == newHash {
 				continue
 			}
-			if err := s.proton.UpdateContact(ctx, rec.UID, vcardStr); err != nil {
-				return fmt.Errorf("update proton contact %q: %w", uid, err)
+			if updateErr := s.proton.UpdateContact(ctx, rec.UID, vcardStr); updateErr != nil {
+				return fmt.Errorf("update proton contact %q: %w", uid, updateErr)
 			}
 		}
 
 		s.log.Info("synced carddav→proton", "uid", uid)
 
-		if err := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
+		if upsertErr := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
 			UID:       uid,
 			ETag:      obj.ETag,
 			VCardHash: hashString(vcardStr),
-		}); err != nil {
-			return fmt.Errorf("upsert local contact %q: %w", uid, err)
+		}); upsertErr != nil {
+			return fmt.Errorf("upsert local contact %q: %w", uid, upsertErr)
 		}
 	}
 	return nil

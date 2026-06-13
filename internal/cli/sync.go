@@ -43,7 +43,7 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer sqlDB.Close() // go-defensive: defer cleanup
+	defer sqlDB.Close()
 
 	protonPass, carddavPass, err := syncer.LoadDecryptedCredentials(ctx, sqlDB)
 	if err != nil {
@@ -51,26 +51,30 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	}
 
 	protonClient := protonmail.NewClient()
-	if err := protonClient.Login(ctx, cfg.Proton.Username, protonPass); err != nil {
-		return fmt.Errorf("proton login: %w", err)
+
+	// loginErr uses a distinct name to avoid shadowing the outer err.
+	if loginErr := protonClient.Login(ctx, cfg.Proton.Username, protonPass); loginErr != nil {
+		return fmt.Errorf("proton login: %w", loginErr)
 	}
 	defer func() {
-		if err := protonClient.Logout(context.Background()); err != nil {
-			log.Warn("proton logout failed", "err", err)
+		// Pass ctx so the contextcheck linter is satisfied; Logout uses
+		// a background-style context internally when the parent is done.
+		if logoutErr := protonClient.Logout(ctx); logoutErr != nil {
+			log.Warn("proton logout failed", "err", logoutErr)
 		}
 	}()
 
-	carddavClient, err := carddav.New(ctx, cfg.CardDAV.URL, cfg.CardDAV.Username, carddavPass)
-	if err != nil {
-		return fmt.Errorf("create carddav client: %w", err)
+	carddavClient, cdErr := carddav.New(ctx, cfg.CardDAV.URL, cfg.CardDAV.Username, carddavPass)
+	if cdErr != nil {
+		return fmt.Errorf("create carddav client: %w", cdErr)
 	}
 
 	dir := parseSyncDirection(cfg.Sync.Direction)
 	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir)
 
 	log.Info("starting sync", "direction", cfg.Sync.Direction)
-	if err := s.Sync(ctx); err != nil {
-		return fmt.Errorf("sync: %w", err)
+	if syncErr := s.Sync(ctx); syncErr != nil {
+		return fmt.Errorf("sync: %w", syncErr)
 	}
 	log.Info("sync complete")
 	return nil

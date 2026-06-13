@@ -10,11 +10,12 @@ import (
 )
 
 // ContactRecord represents a locally cached contact state.
+// Fields ordered for minimal padding (fieldalignment).
 type ContactRecord struct {
-	UID        string
-	ETag       string
-	VCardHash  string
-	UpdatedAt  time.Time
+	UID       string
+	ETag      string
+	VCardHash string
+	UpdatedAt time.Time
 }
 
 // UpsertContact inserts or updates a contact record.
@@ -62,24 +63,24 @@ func ListContacts(ctx context.Context, db *sql.DB) ([]ContactRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list contacts: %w", err)
 	}
-	defer rows.Close() // go-defensive: defer cleanup immediately after resource open
+	defer rows.Close()
 
 	var records []ContactRecord
 	for rows.Next() {
 		var r ContactRecord
 		var updatedAtUnix int64
-		if err := rows.Scan(&r.UID, &r.ETag, &r.VCardHash, &updatedAtUnix); err != nil {
-			return nil, fmt.Errorf("scan contact row: %w", err)
+		if scanErr := rows.Scan(&r.UID, &r.ETag, &r.VCardHash, &updatedAtUnix); scanErr != nil {
+			return nil, fmt.Errorf("scan contact row: %w", scanErr)
 		}
 		r.UpdatedAt = time.Unix(updatedAtUnix, 0).UTC()
 		records = append(records, r)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate contact rows: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate contact rows: %w", rowsErr)
 	}
 
 	if records == nil {
-		records = []ContactRecord{} // go-defensive: always return non-nil slice
+		records = []ContactRecord{}
 	}
 	return records, nil
 }
