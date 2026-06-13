@@ -96,9 +96,15 @@ func New(ctx context.Context, serverURL, username, password string) (*Client, er
 
 // ListContacts returns all contacts in the address book.
 // The returned slice is always non-nil (go-defensive).
+//
+// The query filters on "UID is defined" rather than sending an empty filter:
+// every vCard has a UID, so this matches all contacts, while an empty filter is
+// interpreted as "match nothing" by some servers (e.g. Radicale), which would
+// silently return zero contacts.
 func (c *Client) ListContacts(ctx context.Context) ([]carddav.AddressObject, error) {
 	objects, err := c.inner.QueryAddressBook(ctx, c.addressBook, &carddav.AddressBookQuery{
 		DataRequest: carddav.AddressDataRequest{AllProp: true},
+		PropFilters: []carddav.PropFilter{{Name: "UID"}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query address book: %w", err)
