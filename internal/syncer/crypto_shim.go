@@ -3,6 +3,7 @@ package syncer
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -38,4 +39,11 @@ func LoadDecryptedCredentials(ctx context.Context, sqlDB *sql.DB) (protonPass, c
 	}
 
 	return protonPassEnv, string(cdPassBytes), nil
+}
+
+// hashString returns the hex-encoded SHA-256 digest of s.
+// Used to detect whether a vCard has changed since last sync.
+func hashString(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", sum)
 }

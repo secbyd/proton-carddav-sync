@@ -2,6 +2,7 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -125,15 +126,15 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		default:
 		}
 
-		var sb strings.Builder
-		if obj.Data != nil {
-			if _, err := sb.ReadFrom(obj.Data); err != nil {
-				s.log.Warn("skip carddav contact: read data failed",
-					"path", obj.Path, "err", err)
-				continue
-			}
+		// obj.Card is a vcard.Card (already parsed by go-webdav).
+		// Encode it back to a string for storage and hashing.
+		var buf bytes.Buffer
+		if err := vcard.NewEncoder(&buf).Encode(obj.Card); err != nil {
+			s.log.Warn("skip carddav contact: encode vcard failed",
+				"path", obj.Path, "err", err)
+			continue
 		}
-		vcardStr := sb.String()
+		vcardStr := buf.String()
 		uid := extractUID(vcardStr, obj.Path)
 
 		rec, err := dbpkg.GetContact(ctx, s.db, uid)
