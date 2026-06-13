@@ -22,12 +22,15 @@ var (
 )
 
 // Config holds all application configuration.
+// Fields are ordered so that structs whose trailing field is a non-pointer
+// (SyncConfig ends in an int) come last, keeping the GC pointer-scan prefix
+// minimal (satisfies govet fieldalignment).
 type Config struct {
 	Proton   ProtonConfig   `mapstructure:"proton"`
 	CardDAV  CardDAVConfig  `mapstructure:"carddav"`
-	Sync     SyncConfig     `mapstructure:"sync"`
 	Database DatabaseConfig `mapstructure:"database"`
 	Log      LogConfig      `mapstructure:"log"`
+	Sync     SyncConfig     `mapstructure:"sync"`
 }
 
 // ProtonConfig holds Proton Mail connection settings.

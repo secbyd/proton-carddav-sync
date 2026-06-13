@@ -1,34 +1,53 @@
 # Patches
 
-This directory contains patches for upstream Go module dependencies that cannot
-be fixed in-place because they are read-only entries in the module cache.
+This directory documents patches applied to upstream Go module dependencies
+that cannot be fixed in-place because the upstream projects are unmaintained for
+current Go toolchains and we have no ability to publish fixed releases.
+
+The patches are **applied in the committed `vendor/` directory** so that the
+build is reproducible locally and in CI with no module-cache surgery. The files
+here are reference copies of the diffs that have been baked into `vendor/`.
 
 ## go-proton-api-address-sortfunc.patch
 
-**Affects:** `github.com/ProtonMail/go-proton-api v0.4.0`  
-**File patched:** `address.go`  
+**Affects:** `github.com/ProtonMail/go-proton-api v0.4.0`
+**File patched:** `address.go`
+**Vendored at:** `vendor/github.com/ProtonMail/go-proton-api/address.go`
+
 **Root cause:** Go 1.21 changed `slices.SortFunc` to require a comparison
-function returning `int` (negative / zero / positive) instead of `bool`.
-`go-proton-api@v0.4.0` still uses the old `golang.org/x/exp/slices` with the
-`bool`-returning form, which no longer compiles under Go 1.21+.
+function returning `int` (negative / zero / positive) instead of `bool`. The
+pinned `golang.org/x/exp/slices` already ships the new `int`-returning
+signature, so the upstream `bool`-returning call in `address.go` no longer
+compiles under Go 1.21+.
 
-### Recommended fix — `replace` directive
+**Why not switch to the stdlib `cmp`/`slices` packages?** `go-proton-api`'s own
+`go.mod` declares `go 1.18`. The Go toolchain forbids a module from importing
+standard-library packages newer than its declared language version, so
+importing `cmp` or `slices` from inside `go-proton-api` fails with
+`could not import cmp`. The patch therefore keeps the existing
+`golang.org/x/exp/slices` import and only rewrites the comparator body.
 
-The cleanest way to apply this without touching the module cache is to fork
-the module and add a `replace` directive to `go.mod`:
+### How the patch is maintained
+
+The patch lives in `vendor/` and is committed. **Do not run `go mod vendor`
+without re-applying it** — `go mod vendor` regenerates `vendor/` faithfully from
+the module cache and will revert this change. CI builds with `-mod=vendor` and
+never re-vendors.
+
+If you ever need to regenerate `vendor/`:
+
+```bash
+go mod vendor
+git apply patches/go-proton-api-address-sortfunc.patch  # or hand-apply the diff
+go build -mod=vendor ./...                               # verify
+```
+
+### Preferred long-term fix
+
+Publish a forked release and add a `replace` directive, dropping the vendored
+patch entirely:
 
 ```
 # go.mod
 replace github.com/ProtonMail/go-proton-api v0.4.0 => github.com/secbyd/go-proton-api v0.4.1-patched
-```
-
-Until that fork is published, the CI workflow applies the patch directly to the
-module cache as a pre-build step (see `.github/workflows/ci.yml`).
-
-### Manual application
-
-```bash
-MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
-chmod -R u+w "$MOD"
-patch -p1 -d "$MOD" < patches/go-proton-api-address-sortfunc.patch
 ```

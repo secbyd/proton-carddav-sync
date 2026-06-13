@@ -10,12 +10,14 @@ import (
 )
 
 // ContactRecord represents a locally cached contact state.
-// Fields ordered for minimal padding (fieldalignment).
+// time.Time is placed first: its only pointer (loc) sits 16 bytes in, so
+// leading with it lets the trailing string pointers end the GC scan prefix
+// sooner (satisfies govet fieldalignment).
 type ContactRecord struct {
+	UpdatedAt time.Time
 	UID       string
 	ETag      string
 	VCardHash string
-	UpdatedAt time.Time
 }
 
 // UpsertContact inserts or updates a contact record.

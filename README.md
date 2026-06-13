@@ -28,7 +28,7 @@ mkdir -p ~/.config/proton-carddav-sync
 cp config.yaml.example ~/.config/proton-carddav-sync/config.yaml
 $EDITOR ~/.config/proton-carddav-sync/config.yaml
 
-# 3. Build
+# 3. Build (uses the committed vendor/ tree; no extra setup needed)
 go build -o proton-carddav-sync ./cmd/proton-carddav-sync
 
 # 4. Store encrypted credentials

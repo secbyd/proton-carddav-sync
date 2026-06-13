@@ -1,23 +1,26 @@
 --- a/address.go
 +++ b/address.go
-@@ -1,8 +1,9 @@
- package proton
- 
- import (
- 	"context"
- 
- 	"github.com/go-resty/resty/v2"
--	"golang.org/x/exp/slices"
-+	"cmp"
-+	"slices"
- )
-@@ -20,7 +21,7 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
- 	}); err != nil {
+@@ -18,8 +18,21 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
  		return nil, err
  	}
- 
+
 -	slices.SortFunc(res.Addresses, func(a, b Address) bool {
 -		return a.Order < b.Order
++	// PATCH(secbyd/proton-carddav-sync): Go 1.21 changed slices.SortFunc to
++	// require an int-returning (cmp-style) comparator. The pinned
++	// golang.org/x/exp/slices already uses the new signature, so the upstream
++	// bool-returning form no longer compiles. We keep the x/exp/slices import
++	// (go-proton-api declares go 1.18, which cannot import the stdlib cmp/slices
++	// packages) and only convert the comparator body.
 +	slices.SortFunc(res.Addresses, func(a, b Address) int {
-+		return cmp.Compare(a.Order, b.Order)
++		switch {
++		case a.Order < b.Order:
++			return -1
++		case a.Order > b.Order:
++			return 1
++		default:
++			return 0
++		}
  	})
+
+ 	return res.Addresses, nil

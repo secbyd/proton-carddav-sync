@@ -7,19 +7,22 @@ on:
     branches: ["main"]
 
 permissions:
-  contents: write
+  contents: read
+
+# All jobs build against the committed vendor/ directory (-mod=vendor).
+# vendor/ contains a local patch to github.com/ProtonMail/go-proton-api
+# (address.go, slices.SortFunc Go 1.21 compatibility — see patches/README.md).
+# Do NOT run `go mod vendor` in CI: it would revert that patch.
 
 jobs:
   # ──────────────────────────────────────────────
-  # 1. Lint — go mod tidy + go vet + golangci-lint
+  # 1. Lint — go vet + golangci-lint (vendored)
   # ──────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -30,31 +33,11 @@ jobs:
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
 
-      - name: Download modules (populate module cache)
-        run: go mod download
-
-      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: |
-          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
-          chmod -R u+w "$MOD"
-          FILE="$MOD/address.go"
-          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
-          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
-          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
-
-      - name: Run go mod tidy and commit if changed
-        run: |
-          go mod tidy
-          if ! git diff --quiet go.mod go.sum; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add go.mod go.sum
-            git commit -m "chore: go mod tidy [skip ci]"
-            git push
-          fi
+      - name: Verify vendor consistency
+        run: go mod verify && go build -mod=vendor -o /dev/null ./...
 
       - name: go vet
-        run: go vet ./...
+        run: go vet -mod=vendor ./...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -63,7 +46,7 @@ jobs:
           args: --timeout=5m
 
   # ──────────────────────────────────────────────
-  # 2. Test
+  # 2. Test (vendored)
   # ──────────────────────────────────────────────
   test:
     name: Test
@@ -81,23 +64,11 @@ jobs:
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
 
-      - name: Download modules (populate module cache)
-        run: go mod download
-
-      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: |
-          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
-          chmod -R u+w "$MOD"
-          FILE="$MOD/address.go"
-          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
-          sed -i 's/func(a, b Address) bool {/return cmp.Compare(a.Order, b.Order)/' "$FILE"
-          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
-
       - name: Run tests
-        run: go test -v -race -count=1 ./...
+        run: go test -mod=vendor -race -count=1 ./...
 
   # ──────────────────────────────────────────────
-  # 3. Build — cross-compile linux/amd64 + linux/arm64 + darwin/amd64
+  # 3. Build — cross-compile linux/amd64+arm64, darwin/amd64+arm64
   # ──────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -129,18 +100,6 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y gcc gcc-aarch64-linux-gnu
 
-      - name: Download modules (populate module cache)
-        run: go mod download
-
-      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: |
-          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
-          chmod -R u+w "$MOD"
-          FILE="$MOD/address.go"
-          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
-          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
-          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
-
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -149,7 +108,7 @@ jobs:
           CC: ${{ matrix.goarch == 'arm64' && matrix.goos == 'linux' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
           mkdir -p dist
-          go build \
+          go build -mod=vendor \
             -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" \
             -o dist/proton-carddav-sync-${{ matrix.goos }}-${{ matrix.goarch }} \
             ./cmd/proton-carddav-sync
