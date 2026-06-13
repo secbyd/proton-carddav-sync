@@ -71,6 +71,9 @@ func gatherConfigInteractively() (*config.Config, error) {
 	if cfg.Sync.Conflict, err = promptLine(r, "Conflict policy (prefer-newer|prefer-proton|prefer-carddav)", "prefer-newer"); err != nil {
 		return nil, err
 	}
+	// Proton write-pacing: keep the safe defaults rather than prompting.
+	cfg.Sync.ProtonMaxRequestsPerMinute = config.DefaultProtonMaxRequestsPerMinute
+	cfg.Sync.MaxNewProtonContactsPerRun = config.DefaultMaxNewProtonContactsPerRun
 
 	intervalStr, err := promptLine(r, "Sync interval (seconds)", "300")
 	if err != nil {

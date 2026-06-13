@@ -34,6 +34,15 @@ sync:
   conflict: "prefer-newer"
   # How often to sync in daemon mode, in seconds.
   interval_seconds: 900
+  # Throttle ALL Proton API calls to this many per minute. Keeps a large first
+  # sync gentle so Proton's anti-abuse system does not throttle/flag the account.
+  # Raise it once your contacts are synced if you want faster runs. (<=0 = off,
+  # not recommended.)
+  proton_max_requests_per_minute: 60
+  # Optional hard cap on how many brand-new contacts are pushed to Proton per
+  # run; the rest are created on later runs. 0 = unlimited (pacing still applies).
+  # Consider setting e.g. 50 for the very first sync of a large address book.
+  max_new_proton_contacts_per_run: 0
 
 database:
   # Path to the SQLite database file; ~ is expanded.

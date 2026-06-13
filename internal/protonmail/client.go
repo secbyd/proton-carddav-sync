@@ -7,10 +7,56 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	proton "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
+
+// rateLimiter paces requests to at most one per interval, blocking (honouring
+// ctx) until a slot is free. It is safe for concurrent use.
+type rateLimiter struct {
+	next     time.Time
+	interval time.Duration
+	mu       sync.Mutex
+}
+
+// newRateLimiter returns a limiter allowing perMinute requests per minute, or
+// nil (no limiting) when perMinute <= 0.
+func newRateLimiter(perMinute int) *rateLimiter {
+	if perMinute <= 0 {
+		return nil
+	}
+	return &rateLimiter{interval: time.Minute / time.Duration(perMinute)}
+}
+
+func (l *rateLimiter) wait(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	start := l.next
+	now := time.Now()
+	if start.Before(now) {
+		start = now
+	}
+	l.next = start.Add(l.interval)
+	l.mu.Unlock()
+
+	delay := time.Until(start)
+	if delay <= 0 {
+		return nil
+	}
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // defaultUserAgent is a browser-like User-Agent. go-proton-api otherwise sends
 // resty's default ("go-resty/..."), which Proton's anti-abuse system treats as a
@@ -26,13 +72,18 @@ const defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/201001
 const protonAPIVersion = "3"
 
 // protonTransport injects the headers a real Proton web client sends — a browser
-// User-Agent and the API version — on every request.
+// User-Agent and the API version — and paces every request through the limiter
+// to stay well under Proton's anti-abuse thresholds.
 type protonTransport struct {
-	base http.RoundTripper
-	ua   string
+	base    http.RoundTripper
+	limiter *rateLimiter
+	ua      string
 }
 
 func (t *protonTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := t.limiter.wait(req.Context()); err != nil {
+		return nil, err
+	}
 	// Clone per the RoundTripper contract (must not mutate the input request).
 	r := req.Clone(req.Context())
 	r.Header.Set("User-Agent", t.ua)
@@ -77,14 +128,19 @@ type Client struct {
 // NewClient creates a new unauthenticated Proton API client. appVersion sets
 // the x-pm-appversion header; the upstream default is rejected by Proton, so an
 // empty value falls back to nothing and the caller is expected to supply one.
-func NewClient(appVersion string) *Client {
+// maxRequestsPerMinute paces all Proton API traffic (<= 0 disables pacing).
+func NewClient(appVersion string, maxRequestsPerMinute int) *Client {
 	ua := os.Getenv("PCS_PROTON_USER_AGENT")
 	if ua == "" {
 		ua = defaultUserAgent
 	}
 
 	opts := []proton.Option{
-		proton.WithTransport(&protonTransport{base: http.DefaultTransport, ua: ua}),
+		proton.WithTransport(&protonTransport{
+			base:    http.DefaultTransport,
+			ua:      ua,
+			limiter: newRateLimiter(maxRequestsPerMinute),
+		}),
 	}
 	if appVersion != "" {
 		opts = append(opts, proton.WithAppVersion(appVersion))

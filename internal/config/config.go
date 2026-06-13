@@ -21,6 +21,17 @@ import (
 // x-pm-appversion your browser sends on mail.proton.me).
 const DefaultProtonAppVersion = "Other"
 
+// Proton write-pacing defaults. A first sync of a large address book can mean
+// hundreds of contact creates; pacing keeps the request rate gentle so Proton's
+// anti-abuse system does not throttle or flag the account.
+const (
+	// DefaultProtonMaxRequestsPerMinute is a conservative steady rate (~1/sec).
+	DefaultProtonMaxRequestsPerMinute = 60
+	// DefaultMaxNewProtonContactsPerRun is unlimited; pacing alone is the default
+	// protection, with this cap available for the extra-cautious.
+	DefaultMaxNewProtonContactsPerRun = 0
+)
+
 // Sentinel errors for configuration validation.
 var (
 	// ErrMissingProtonUsername is returned when the Proton username is empty.
@@ -61,13 +72,20 @@ type CardDAVConfig struct {
 }
 
 // SyncConfig holds synchronisation behaviour settings.
-// strings before int for optimal field alignment.
+// strings before ints for optimal field alignment.
 type SyncConfig struct {
 	Direction string `mapstructure:"direction"`
 	// Conflict resolves genuine field conflicts in a bidirectional sync:
 	// prefer-newer (default) / prefer-proton / prefer-carddav.
 	Conflict        string `mapstructure:"conflict"`
 	IntervalSeconds int    `mapstructure:"interval_seconds"`
+	// ProtonMaxRequestsPerMinute paces ALL Proton API calls to stay under
+	// Proton's anti-abuse thresholds (<= 0 disables pacing — not recommended).
+	ProtonMaxRequestsPerMinute int `mapstructure:"proton_max_requests_per_minute"`
+	// MaxNewProtonContactsPerRun caps how many brand-new contacts are pushed to
+	// Proton per sync run, spreading a large first sync over several runs
+	// (0 = unlimited).
+	MaxNewProtonContactsPerRun int `mapstructure:"max_new_proton_contacts_per_run"`
 }
 
 // DatabaseConfig holds SQLite storage settings.
@@ -146,6 +164,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sync.interval_seconds", 300)
 	v.SetDefault("sync.direction", "both")
 	v.SetDefault("sync.conflict", "prefer-newer")
+	v.SetDefault("sync.proton_max_requests_per_minute", DefaultProtonMaxRequestsPerMinute)
+	v.SetDefault("sync.max_new_proton_contacts_per_run", DefaultMaxNewProtonContactsPerRun)
 	v.SetDefault("database.path", "~/.local/share/proton-carddav-sync/sync.db")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
@@ -183,6 +203,8 @@ func Save(cfg *Config, path string) error {
 	v.Set("sync.direction", cfg.Sync.Direction)
 	v.Set("sync.conflict", cfg.Sync.Conflict)
 	v.Set("sync.interval_seconds", cfg.Sync.IntervalSeconds)
+	v.Set("sync.proton_max_requests_per_minute", cfg.Sync.ProtonMaxRequestsPerMinute)
+	v.Set("sync.max_new_proton_contacts_per_run", cfg.Sync.MaxNewProtonContactsPerRun)
 	v.Set("database.path", cfg.Database.Path)
 	v.Set("log.level", cfg.Log.Level)
 	v.Set("log.format", cfg.Log.Format)

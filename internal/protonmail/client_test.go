@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestUserAgentTransportSetsHeader(t *testing.T) {
@@ -30,5 +31,41 @@ func TestUserAgentTransportSetsHeader(t *testing.T) {
 
 	if got != defaultUserAgent {
 		t.Fatalf("server saw User-Agent %q, want %q", got, defaultUserAgent)
+	}
+}
+
+func TestRateLimiter(t *testing.T) {
+	if newRateLimiter(0) != nil {
+		t.Error("newRateLimiter(0) should be nil (no limiting)")
+	}
+
+	// nil limiter never blocks.
+	var nilLimiter *rateLimiter
+	if err := nilLimiter.wait(context.Background()); err != nil {
+		t.Errorf("nil limiter wait: %v", err)
+	}
+
+	// Three calls spaced by a 40ms interval take at least ~2 intervals.
+	l := &rateLimiter{interval: 40 * time.Millisecond}
+	ctx := context.Background()
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := l.wait(ctx); err != nil {
+			t.Fatalf("wait %d: %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 70*time.Millisecond {
+		t.Errorf("3 paced calls took %v, want >= ~80ms", elapsed)
+	}
+
+	// A cancelled context aborts the wait promptly.
+	slow := &rateLimiter{interval: time.Hour}
+	if err := slow.wait(context.Background()); err != nil { // consume the immediate slot
+		t.Fatalf("prime slow limiter: %v", err)
+	}
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := slow.wait(cctx); err == nil {
+		t.Error("wait with cancelled context should return an error")
 	}
 }

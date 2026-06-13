@@ -78,7 +78,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Log in to obtain a durable, password-free session (with TOTP if required).
-	protonClient := protonmail.NewClient(cfg.Proton.AppVersion)
+	protonClient := protonmail.NewClient(cfg.Proton.AppVersion, cfg.Sync.ProtonMaxRequestsPerMinute)
 	totpPrompt := func() (string, error) {
 		return promptLine(bufio.NewReader(os.Stdin), "Proton TOTP code", "")
 	}

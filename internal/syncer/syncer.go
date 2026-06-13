@@ -29,16 +29,19 @@ const (
 
 // Syncer orchestrates contact synchronisation.
 type Syncer struct {
-	proton  protonmail.ContactsClient
-	carddav carddav.ContactsClient
-	db      *sql.DB
-	log     *slog.Logger
-	dir     Direction
-	policy  vcardsync.Policy
+	proton       protonmail.ContactsClient
+	carddav      carddav.ContactsClient
+	db           *sql.DB
+	log          *slog.Logger
+	dir          Direction
+	policy       vcardsync.Policy
+	maxNewProton int // cap on new Proton contacts created per run (0 = unlimited)
 }
 
 // New constructs a Syncer. policy selects how genuine field conflicts are
-// resolved during a bidirectional (DirectionBoth) sync.
+// resolved during a bidirectional (DirectionBoth) sync; maxNewProton caps how
+// many brand-new contacts are pushed to Proton in a single run (0 = unlimited),
+// to spread a large first sync over several runs.
 func New(
 	protonClient protonmail.ContactsClient,
 	carddavClient carddav.ContactsClient,
@@ -46,14 +49,16 @@ func New(
 	log *slog.Logger,
 	dir Direction,
 	policy vcardsync.Policy,
+	maxNewProton int,
 ) *Syncer {
 	return &Syncer{
-		proton:  protonClient,
-		carddav: carddavClient,
-		db:      db,
-		log:     log,
-		dir:     dir,
-		policy:  policy,
+		proton:       protonClient,
+		carddav:      carddavClient,
+		db:           db,
+		log:          log,
+		dir:          dir,
+		policy:       policy,
+		maxNewProton: maxNewProton,
 	}
 }
 
@@ -170,6 +175,7 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		return fmt.Errorf("list carddav contacts: %w", err)
 	}
 
+	newProton, deferred := 0, 0
 	for _, obj := range objects {
 		select {
 		case <-ctx.Done():
@@ -189,9 +195,14 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		rec, getErr := dbpkg.GetContact(ctx, s.db, uid)
 		switch {
 		case errors.Is(getErr, sql.ErrNoRows):
+			if s.maxNewProton > 0 && newProton >= s.maxNewProton {
+				deferred++
+				continue
+			}
 			if _, createErr := s.proton.CreateContact(ctx, vcardStr); createErr != nil {
 				return fmt.Errorf("create proton contact %q: %w", uid, createErr)
 			}
+			newProton++
 		case getErr != nil:
 			return fmt.Errorf("get local contact %q: %w", uid, getErr)
 		default:
@@ -213,6 +224,10 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		}); upsertErr != nil {
 			return fmt.Errorf("upsert local contact %q: %w", uid, upsertErr)
 		}
+	}
+	if deferred > 0 {
+		s.log.Info("deferred new Proton contacts to a later run (per-run cap reached)",
+			"deferred", deferred, "created", newProton, "cap", s.maxNewProton)
 	}
 	return nil
 }
@@ -251,6 +266,7 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 		uids[uid] = struct{}{}
 	}
 
+	newProton, deferred := 0, 0
 	for uid := range uids {
 		select {
 		case <-ctx.Done():
@@ -291,10 +307,18 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 					"(whole-contact deletion is not synced)", "uid", uid)
 				continue
 			}
+			// Bound the number of new Proton contacts per run so a large first
+			// sync does not burst against Proton's anti-abuse limits. Deferred
+			// contacts have no base record and are retried next run.
+			if s.maxNewProton > 0 && newProton >= s.maxNewProton {
+				deferred++
+				continue
+			}
 			newID, createErr := s.proton.CreateContact(ctx, ce.vcard)
 			if createErr != nil {
 				return fmt.Errorf("create proton contact %q: %w", uid, createErr)
 			}
+			newProton++
 			protonBase := ce.vcard
 			if refetched, refErr := s.proton.GetContactVCard(ctx, newID); refErr != nil {
 				s.log.Warn("proton refetch after create failed; base may be stale", "uid", uid, "err", refErr)
@@ -306,6 +330,10 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+	if deferred > 0 {
+		s.log.Info("deferred new Proton contacts to a later run (per-run cap reached)",
+			"deferred", deferred, "created", newProton, "cap", s.maxNewProton)
 	}
 	return nil
 }

@@ -51,7 +51,7 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 		return fmt.Errorf("load credentials: %w", err)
 	}
 
-	protonClient := protonmail.NewClient(cfg.Proton.AppVersion)
+	protonClient := protonmail.NewClient(cfg.Proton.AppVersion, cfg.Sync.ProtonMaxRequestsPerMinute)
 
 	// Persist rotated refresh tokens so the next run can resume. Rotation only
 	// happens during live API calls (which share ctx), so propagating ctx here
@@ -83,7 +83,8 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 		"address_books_found", carddavClient.AddressBookCount())
 
 	dir := parseSyncDirection(cfg.Sync.Direction)
-	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir, parseConflictPolicy(cfg.Sync.Conflict))
+	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir,
+		parseConflictPolicy(cfg.Sync.Conflict), cfg.Sync.MaxNewProtonContactsPerRun)
 
 	log.Info("starting sync", "direction", cfg.Sync.Direction)
 	if syncErr := s.Sync(ctx); syncErr != nil {

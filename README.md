@@ -68,6 +68,8 @@ edit it by hand). No secrets are stored in this file.
 | `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
 | `sync.conflict` | `prefer-newer` | Conflict policy for `both`: `prefer-newer` / `prefer-proton` / `prefer-carddav` |
 | `sync.interval_seconds` | `300` | Daemon sync interval, in seconds |
+| `sync.proton_max_requests_per_minute` | `60` | Throttle for **all** Proton API calls (see [Proton rate limits](#proton-rate-limits--account-safety)) |
+| `sync.max_new_proton_contacts_per_run` | `0` | Optional cap on new Proton contacts created per run (`0` = unlimited) |
 | `database.path` | `~/.local/share/…/sync.db` | SQLite state database path |
 | `log.level` | `info` | `debug` / `info` / `warn` / `error` |
 | `log.format` | `text` | `text` / `json` |
@@ -115,6 +117,41 @@ Remaining limitations:
 - Introducing the *first* value of a property type that Proton can model but the
   contact never had (e.g. a contact that had no phone at all) may not push to
   Proton until another Proton-modelled field on that contact also changes.
+
+## Proton rate limits & account safety
+
+> **⚠️ Read this before your first sync of a large address book.**
+
+Proton enforces strict anti-abuse limits, and its
+[Acceptable Use Policy](https://proton.me/legal/abuse) gives Proton broad
+discretion to throttle, temporarily restrict, or in extreme cases disable
+accounts that generate abnormal API traffic. A first sync that pushes hundreds
+of contacts into Proton at once is exactly the kind of burst that can trip these
+limits. **Treat this as a real risk on your primary account.**
+
+To protect against this, the tool paces traffic itself rather than relying on
+Proton to push back:
+
+- **All Proton API calls are rate-limited** to `sync.proton_max_requests_per_minute`
+  (default **60/min**, ~1 request/second). Every list, read, create, and update
+  goes through this limiter, so a sync is a steady trickle, never a burst. A
+  first sync of a few hundred contacts therefore takes several minutes by design.
+- **`sync.max_new_proton_contacts_per_run`** (default `0` = unlimited) optionally
+  caps how many brand-new contacts are created in Proton per run. Deferred
+  contacts are created on subsequent runs, spreading a very large initial import
+  across the daemon's interval. For a big first import, consider a value like
+  `50` and let the daemon work through the backlog over several cycles.
+- go-proton-api also honours Proton's `Retry-After` on HTTP 429 as a backstop.
+
+Recommendations:
+
+- **First sync of a large address book:** keep the default 60/min, and for very
+  large books (hundreds+) set `max_new_proton_contacts_per_run: 50` so the import
+  trickles in. Run `sync` once and watch the `reconcile: indexed contacts` and
+  `created carddav→proton` log lines.
+- **Test on a throwaway Proton account first** if you can.
+- You can raise `proton_max_requests_per_minute` after the initial sync, when
+  ongoing runs only carry a handful of changes.
 
 ## Troubleshooting
 
