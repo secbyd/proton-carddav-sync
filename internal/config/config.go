@@ -123,8 +123,12 @@ func Load(cfgFile string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	// Expand ~ once so every consumer (db.Open, the MkdirAll below) sees the
+	// same absolute path — SQLite does not expand ~ itself.
+	cfg.Database.Path = expandHome(cfg.Database.Path)
+
 	// Ensure the database directory exists.
-	dbDir := filepath.Dir(expandHome(cfg.Database.Path))
+	dbDir := filepath.Dir(cfg.Database.Path)
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory %q: %w", dbDir, err)
 	}

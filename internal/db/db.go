@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
@@ -35,8 +37,15 @@ type Credentials struct {
 }
 
 // Open opens (or creates) the SQLite database at path, enables WAL mode, and
-// runs schema migrations.
+// runs schema migrations. The parent directory is created if missing; SQLite
+// creates the database file itself, but only when its directory already exists.
 func Open(path string) (*sql.DB, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create database directory %q: %w", dir, err)
+		}
+	}
+
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite3 at %q: %w", path, err)
