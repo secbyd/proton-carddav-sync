@@ -69,6 +69,8 @@ func Load(cfgFile string) (*Config, error) {
 
 	setDefaults(v)
 
+	const defaultConfigPath = "$HOME/.config/proton-carddav-sync/config.yaml"
+
 	if cfgFile != "" {
 		v.SetConfigFile(expandHome(cfgFile))
 	} else {
@@ -79,7 +81,17 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) {
+			where := defaultConfigPath + " or ./config.yaml"
+			if cfgFile != "" {
+				where = cfgFile
+			}
+			return nil, fmt.Errorf(
+				"no config file found at %s — copy config.yaml.example there and edit it "+
+					"(or pass --config <path>)", where)
+		}
+		return nil, fmt.Errorf("read config %q: %w", v.ConfigFileUsed(), err)
 	}
 
 	var cfg Config

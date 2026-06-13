@@ -1,0 +1,17 @@
+# Build artifacts
+/proton-carddav-sync
+/main
+/dist/
+*.exe
+
+# Local config & state (never commit secrets or databases)
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+secrets.env
+
+# Editor / OS noise
+.DS_Store
+
+# Note: vendor/ is intentionally committed (carries a patched go-proton-api).

@@ -68,23 +68,33 @@ jobs:
         run: go test -mod=vendor -race -count=1 ./...
 
   # ──────────────────────────────────────────────
-  # 3. Build — cross-compile linux/amd64+arm64, darwin/amd64+arm64
+  # 3. Build — linux/amd64+arm64 on Ubuntu, darwin/amd64+arm64 on macOS
+  #
+  # go-sqlite3 needs CGO, so each target is built on a host that has a native
+  # C toolchain for it: linux/arm64 cross-compiles with aarch64-linux-gnu-gcc,
+  # and the darwin targets build natively on macOS runners (cross-compiling
+  # CGO to darwin from Linux fails — clang's `-arch` is unknown to Linux gcc).
   # ──────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
           - goos: linux
             goarch: arm64
+            runner: ubuntu-latest
           - goos: darwin
             goarch: amd64
+            runner: macos-13      # Intel
           - goos: darwin
             goarch: arm64
+            runner: macos-14      # Apple Silicon
 
     steps:
       - uses: actions/checkout@v4
@@ -95,27 +105,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install gcc (required by go-sqlite3 CGO)
+      - name: Install aarch64 cross-compiler (linux/arm64 only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
-          CC: ${{ matrix.goarch == 'arm64' && matrix.goos == 'linux' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+          CC: ${{ matrix.goos == 'darwin' && 'clang' || (matrix.goarch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc') }}
         run: |
           mkdir -p dist
+          # Default binary name is proton-carddav-sync; the os/arch lives in the
+          # artifact name, not the executable.
           go build -mod=vendor \
             -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" \
-            -o dist/proton-carddav-sync-${{ matrix.goos }}-${{ matrix.goarch }} \
+            -o dist/proton-carddav-sync \
             ./cmd/proton-carddav-sync
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: proton-carddav-sync-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/proton-carddav-sync-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/proton-carddav-sync
           retention-days: 7

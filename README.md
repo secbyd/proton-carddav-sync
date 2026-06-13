@@ -32,13 +32,17 @@ $EDITOR ~/.config/proton-carddav-sync/config.yaml
 go build -o proton-carddav-sync ./cmd/proton-carddav-sync
 
 # 4. Store encrypted credentials
+#    PCS_ENCRYPTION_KEY is the master key that encrypts every credential at
+#    rest (Proton + CardDAV passwords). Pick a long, random value and keep it
+#    secret — the daemon needs the same value to decrypt.
+export PCS_ENCRYPTION_KEY="a-long-random-passphrase"
 ./proton-carddav-sync init
 
-# 5. One-shot sync (test)
-PROTON_PASSWORD=yourpassword ./proton-carddav-sync sync
+# 5. One-shot sync (test) — same key decrypts the stored credentials
+PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync sync
 
 # 6. Start daemon
-PROTON_PASSWORD=yourpassword ./proton-carddav-sync run
+PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync run
 ```
 
 ## Configuration
@@ -52,9 +56,8 @@ See [`config.yaml.example`](config.yaml.example) for an annotated reference.
 | `carddav.url` | — | Full CardDAV collection URL |
 | `carddav.username` | — | CardDAV username |
 | `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
-| `sync.merge_strategy` | `prefer-newer` | `prefer-newer` / `prefer-proton` / `prefer-carddav` |
-| `sync.interval` | `15m` | Daemon sync interval (Go duration string) |
-| `db.path` | `~/.local/share/…/sync.db` | SQLite state database path |
+| `sync.interval_seconds` | `300` | Daemon sync interval, in seconds |
+| `database.path` | `~/.local/share/…/sync.db` | SQLite state database path |
 | `log.level` | `info` | `debug` / `info` / `warn` / `error` |
 | `log.format` | `text` | `text` / `json` |
 
@@ -79,9 +82,9 @@ WantedBy=default.target
 
 Create `~/.config/proton-carddav-sync/secrets.env`:
 ```
-PROTON_PASSWORD=your_proton_password
+PCS_ENCRYPTION_KEY=a-long-random-passphrase
 ```
-Chmod it `600`.
+Chmod it `600`. Use the same value you passed to `init`.
 
 ## Architecture
 

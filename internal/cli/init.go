@@ -11,15 +11,19 @@ import (
 	"github.com/secbyd/proton-carddav-sync/internal/config"
 	"github.com/secbyd/proton-carddav-sync/internal/crypto"
 	"github.com/secbyd/proton-carddav-sync/internal/db"
+	"github.com/secbyd/proton-carddav-sync/internal/syncer"
 )
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Store encrypted credentials in the local database",
 	Long: `Prompts for Proton Mail and CardDAV passwords, derives an encryption
-key via PBKDF2, and stores the encrypted credentials in the SQLite database.
+key from PCS_ENCRYPTION_KEY via PBKDF2, and stores the encrypted credentials in
+the SQLite database.
 
-This command must be run once before starting the daemon.`,
+PCS_ENCRYPTION_KEY must be set in the environment: it is the master key that
+protects every stored credential, and the daemon needs the same value to
+decrypt them. This command must be run once before starting the daemon.`,
 	RunE: runInit,
 }
 
@@ -33,6 +37,15 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// The master key comes from the environment so init and the daemon agree
+	// on the same value. go-logging: the key value is never logged.
+	encKey := os.Getenv(syncer.EncryptionKeyEnv)
+	if encKey == "" {
+		return fmt.Errorf("%s environment variable not set; "+
+			"export it (and reuse the same value for the daemon) before running init",
+			syncer.EncryptionKeyEnv)
 	}
 
 	sqlDB, err := db.Open(cfg.Database.Path)
@@ -55,10 +68,15 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("read carddav password: %w", err)
 	}
 
-	// Derive key from Proton password; encrypt the CardDAV password.
-	key, salt, err := crypto.DeriveKey(string(protonPass))
+	// Derive the master key from PCS_ENCRYPTION_KEY; encrypt both passwords.
+	key, salt, err := crypto.DeriveKey(encKey)
 	if err != nil {
 		return fmt.Errorf("derive key: %w", err)
+	}
+
+	encProton, err := crypto.Encrypt(key, protonPass)
+	if err != nil {
+		return fmt.Errorf("encrypt proton password: %w", err)
 	}
 
 	encCardDAV, err := crypto.Encrypt(key, carddavPass)
@@ -68,6 +86,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 
 	creds := db.Credentials{
 		Salt:               salt,
+		ProtonPasswordEnc:  encProton,
 		CardDAVPasswordEnc: encCardDAV,
 	}
 	if err := db.SaveCredentials(ctx, sqlDB, creds); err != nil {

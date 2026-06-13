@@ -20,8 +20,8 @@ var runCmd = &cobra.Command{
 	Long: `Starts a long-running process that syncs contacts on a configurable
 interval. Gracefully shuts down on SIGINT or SIGTERM.
 
-Set PROTON_PASSWORD in the environment (or a systemd EnvironmentFile) before
-starting.`,
+Set PCS_ENCRYPTION_KEY in the environment (or a systemd EnvironmentFile) before
+starting; it decrypts the credentials stored by 'init'.`,
 	RunE: runDaemon,
 }
 

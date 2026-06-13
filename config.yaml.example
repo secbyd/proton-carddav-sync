@@ -1,31 +1,29 @@
 # proton-carddav-sync configuration
 # Copy to ~/.config/proton-carddav-sync/config.yaml and edit.
+#
+# Passwords are NOT stored here. Run `proton-carddav-sync init` once: it prompts
+# for the Proton and CardDAV passwords and stores them encrypted in the SQLite
+# database. The encryption key comes from the PCS_ENCRYPTION_KEY environment
+# variable, which both `init` and the daemon must share.
 
 proton:
-  # Proton Mail username (email address)
+  # Proton Mail username (email address).
   username: "user@proton.me"
-  # For TOTP 2FA: leave empty if not used
-  totp: ""
 
 carddav:
-  # Full CardDAV collection URL
+  # Full CardDAV collection URL,
   # e.g. https://nextcloud.example.com/remote.php/dav/addressbooks/users/alice/contacts/
   url: "https://dav.example.com/addressbooks/user/contacts/"
   username: "alice"
-  # password stored encrypted in the DB after `init`; plain text here
-  # is only read by `init` to bootstrap – remove after first run.
-  password: ""
 
 sync:
   # Direction: both | proton-to-carddav | carddav-to-proton
   direction: "both"
-  # Merge strategy: prefer-proton | prefer-carddav | prefer-newer
-  merge_strategy: "prefer-newer"
-  # How often to sync in daemon mode (Go duration string)
-  interval: "15m"
+  # How often to sync in daemon mode, in seconds.
+  interval_seconds: 900
 
-db:
-  # Path to the SQLite database file; ~ is expanded
+database:
+  # Path to the SQLite database file; ~ is expanded.
   path: "~/.local/share/proton-carddav-sync/sync.db"
 
 log:
