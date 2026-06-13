@@ -29,6 +29,9 @@ carddav:
 sync:
   # Direction: both | proton-to-carddav | carddav-to-proton
   direction: "both"
+  # Conflict policy when the same field changed on both sides (direction: both):
+  # prefer-newer (by REV) | prefer-proton | prefer-carddav
+  conflict: "prefer-newer"
   # How often to sync in daemon mode, in seconds.
   interval_seconds: 900
 

@@ -13,6 +13,7 @@ import (
 	internallog "github.com/secbyd/proton-carddav-sync/internal/log"
 	"github.com/secbyd/proton-carddav-sync/internal/protonmail"
 	"github.com/secbyd/proton-carddav-sync/internal/syncer"
+	"github.com/secbyd/proton-carddav-sync/internal/vcardsync"
 )
 
 var syncCmd = &cobra.Command{
@@ -79,7 +80,7 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	}
 
 	dir := parseSyncDirection(cfg.Sync.Direction)
-	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir)
+	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir, parseConflictPolicy(cfg.Sync.Conflict))
 
 	log.Info("starting sync", "direction", cfg.Sync.Direction)
 	if syncErr := s.Sync(ctx); syncErr != nil {
@@ -97,5 +98,16 @@ func parseSyncDirection(s string) syncer.Direction {
 		return syncer.DirectionToProton
 	default:
 		return syncer.DirectionBoth
+	}
+}
+
+func parseConflictPolicy(s string) vcardsync.Policy {
+	switch s {
+	case "prefer-proton":
+		return vcardsync.PolicyPreferProton
+	case "prefer-carddav":
+		return vcardsync.PolicyPreferCardDAV
+	default:
+		return vcardsync.PolicyPreferNewer
 	}
 }

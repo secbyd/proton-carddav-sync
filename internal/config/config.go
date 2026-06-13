@@ -61,9 +61,12 @@ type CardDAVConfig struct {
 }
 
 // SyncConfig holds synchronisation behaviour settings.
-// string before int for optimal field alignment.
+// strings before int for optimal field alignment.
 type SyncConfig struct {
-	Direction       string `mapstructure:"direction"`
+	Direction string `mapstructure:"direction"`
+	// Conflict resolves genuine field conflicts in a bidirectional sync:
+	// prefer-newer (default) / prefer-proton / prefer-carddav.
+	Conflict        string `mapstructure:"conflict"`
 	IntervalSeconds int    `mapstructure:"interval_seconds"`
 }
 
@@ -142,6 +145,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proton.app_version", DefaultProtonAppVersion)
 	v.SetDefault("sync.interval_seconds", 300)
 	v.SetDefault("sync.direction", "both")
+	v.SetDefault("sync.conflict", "prefer-newer")
 	v.SetDefault("database.path", "~/.local/share/proton-carddav-sync/sync.db")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
@@ -177,6 +181,7 @@ func Save(cfg *Config, path string) error {
 	v.Set("carddav.url", cfg.CardDAV.URL)
 	v.Set("carddav.username", cfg.CardDAV.Username)
 	v.Set("sync.direction", cfg.Sync.Direction)
+	v.Set("sync.conflict", cfg.Sync.Conflict)
 	v.Set("sync.interval_seconds", cfg.Sync.IntervalSeconds)
 	v.Set("database.path", cfg.Database.Path)
 	v.Set("log.level", cfg.Log.Level)

@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     uid          TEXT    PRIMARY KEY,
     etag         TEXT    NOT NULL DEFAULT '',
     vcard_hash   TEXT    NOT NULL DEFAULT '',
+    proton_base  TEXT    NOT NULL DEFAULT '',
+    carddav_base TEXT    NOT NULL DEFAULT '',
     updated_at   INTEGER NOT NULL DEFAULT 0
 );`
 
@@ -83,12 +85,20 @@ CREATE TABLE IF NOT EXISTS contacts (
 		return fmt.Errorf("exec schema: %w", err)
 	}
 
-	// Forward-compat: add the Proton session columns to databases created under
-	// an older schema. ALTER TABLE ADD COLUMN errors if the column already
-	// exists, so each is guarded by a table-definition check.
+	// Forward-compat: add columns to databases created under an older schema.
+	// ALTER TABLE ADD COLUMN errors if the column already exists, so each is
+	// guarded by a table-definition check.
 	for _, col := range []string{"proton_uid_enc", "proton_refresh_enc", "proton_keypass_enc"} {
 		if err := ensureColumn(db, "credentials", col,
 			fmt.Sprintf("ALTER TABLE credentials ADD COLUMN %s BLOB NOT NULL DEFAULT x''", col)); err != nil {
+			return err
+		}
+	}
+	// proton_base / carddav_base hold each side's last-synced vCard, the per-side
+	// bases for the three-way merge.
+	for _, col := range []string{"proton_base", "carddav_base"} {
+		if err := ensureColumn(db, "contacts", col,
+			fmt.Sprintf("ALTER TABLE contacts ADD COLUMN %s TEXT NOT NULL DEFAULT ''", col)); err != nil {
 			return err
 		}
 	}

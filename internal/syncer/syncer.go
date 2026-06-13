@@ -34,15 +34,18 @@ type Syncer struct {
 	db      *sql.DB
 	log     *slog.Logger
 	dir     Direction
+	policy  vcardsync.Policy
 }
 
-// New constructs a Syncer.
+// New constructs a Syncer. policy selects how genuine field conflicts are
+// resolved during a bidirectional (DirectionBoth) sync.
 func New(
 	protonClient protonmail.ContactsClient,
 	carddavClient carddav.ContactsClient,
 	db *sql.DB,
 	log *slog.Logger,
 	dir Direction,
+	policy vcardsync.Policy,
 ) *Syncer {
 	return &Syncer{
 		proton:  protonClient,
@@ -50,22 +53,30 @@ func New(
 		db:      db,
 		log:     log,
 		dir:     dir,
+		policy:  policy,
 	}
 }
 
-// Sync performs one full synchronisation cycle.
+// Sync performs one full synchronisation cycle. The bidirectional case runs a
+// per-contact three-way merge; the one-way cases push a single direction.
 func (s *Syncer) Sync(ctx context.Context) error {
-	if s.dir == DirectionBoth || s.dir == DirectionToCardDAV {
+	switch s.dir {
+	case DirectionToCardDAV:
 		if err := s.syncProtonToCardDAV(ctx); err != nil {
 			return fmt.Errorf("proton→carddav: %w", err)
 		}
-	}
-	if s.dir == DirectionBoth || s.dir == DirectionToProton {
+		return nil
+	case DirectionToProton:
 		if err := s.syncCardDAVToProton(ctx); err != nil {
 			return fmt.Errorf("carddav→proton: %w", err)
 		}
+		return nil
+	default: // DirectionBoth
+		if err := s.reconcile(ctx); err != nil {
+			return fmt.Errorf("reconcile: %w", err)
+		}
+		return nil
 	}
-	return nil
 }
 
 func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
@@ -204,6 +215,201 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// contactSide holds a contact's current vCard plus the handles needed to write
+// back to that side (id for Proton, etag for CardDAV).
+type contactSide struct {
+	id    string
+	etag  string
+	vcard string
+}
+
+// reconcile performs a bidirectional, per-contact three-way merge over the union
+// of contacts on both sides. Field additions, edits, and deletions propagate in
+// both directions; genuine conflicts are resolved by s.policy. Whole-contact
+// deletion is intentionally NOT propagated (a contact present in the last-synced
+// state but now gone from one side is left untouched, not deleted or resurrected).
+func (s *Syncer) reconcile(ctx context.Context) error {
+	protonIdx, err := s.protonByUID(ctx)
+	if err != nil {
+		return err
+	}
+	carddavIdx, err := s.carddavIndex(ctx)
+	if err != nil {
+		return err
+	}
+
+	uids := make(map[string]struct{}, len(protonIdx)+len(carddavIdx))
+	for uid := range protonIdx {
+		uids[uid] = struct{}{}
+	}
+	for uid := range carddavIdx {
+		uids[uid] = struct{}{}
+	}
+
+	for uid := range uids {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		pe, hasP := protonIdx[uid]
+		ce, hasC := carddavIdx[uid]
+
+		rec, getErr := dbpkg.GetContact(ctx, s.db, uid)
+		hasBase := getErr == nil
+		if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+			return fmt.Errorf("get local contact %q: %w", uid, getErr)
+		}
+
+		switch {
+		case hasP && hasC:
+			if err := s.reconcileBoth(ctx, uid, pe, ce, rec); err != nil {
+				return err
+			}
+		case hasP && !hasC:
+			if hasBase {
+				s.log.Warn("contact gone from carddav; not deleting/resurrecting "+
+					"(whole-contact deletion is not synced)", "uid", uid)
+				continue
+			}
+			if putErr := s.carddav.PutContact(ctx, uid, pe.vcard); putErr != nil {
+				return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
+			}
+			s.log.Info("created proton→carddav", "uid", uid)
+			if err := s.saveBases(ctx, uid, "", pe.vcard, pe.vcard); err != nil {
+				return err
+			}
+		case !hasP && hasC:
+			if hasBase {
+				s.log.Warn("contact gone from proton; not deleting/resurrecting "+
+					"(whole-contact deletion is not synced)", "uid", uid)
+				continue
+			}
+			newID, createErr := s.proton.CreateContact(ctx, ce.vcard)
+			if createErr != nil {
+				return fmt.Errorf("create proton contact %q: %w", uid, createErr)
+			}
+			protonBase := ce.vcard
+			if refetched, refErr := s.proton.GetContactVCard(ctx, newID); refErr != nil {
+				s.log.Warn("proton refetch after create failed; base may be stale", "uid", uid, "err", refErr)
+			} else {
+				protonBase = refetched
+			}
+			s.log.Info("created carddav→proton", "uid", uid)
+			if err := s.saveBases(ctx, uid, ce.etag, protonBase, ce.vcard); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// reconcileBoth merges a contact that exists on both sides and writes back any
+// changes, refreshing the stored per-side bases.
+func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide, rec dbpkg.ContactRecord) error {
+	merged, conflicts, err := vcardsync.ThreeWayString(rec.ProtonBase, rec.CardDAVBase, p.vcard, c.vcard, s.policy)
+	if err != nil {
+		s.log.Warn("skip contact: merge failed", "uid", uid, "err", err)
+		return nil
+	}
+	if len(conflicts) > 0 {
+		s.log.Info("merge conflicts resolved by policy", "uid", uid, "fields", conflicts)
+	}
+
+	// Write CardDAV when the merge changed anything (CardDAV is lossless).
+	cdEqual, err := vcardsync.EqualString(merged, c.vcard)
+	if err != nil {
+		return fmt.Errorf("compare carddav contact %q: %w", uid, err)
+	}
+	if !cdEqual {
+		if putErr := s.carddav.PutContact(ctx, uid, merged); putErr != nil {
+			return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
+		}
+		s.log.Info("merged proton↔carddav → carddav", "uid", uid)
+	}
+
+	// Write Proton only when a Proton-modelled property changed (avoids churning
+	// on CardDAV-only fields Proton would drop again). Re-fetch afterwards so the
+	// stored Proton base reflects Proton's own normalised representation.
+	protonBase := p.vcard
+	protonChanged, err := vcardsync.ProtonRelevantDiff(merged, p.vcard, rec.ProtonBase)
+	if err != nil {
+		return fmt.Errorf("compare proton contact %q: %w", uid, err)
+	}
+	if protonChanged {
+		if updErr := s.proton.UpdateContact(ctx, p.id, merged); updErr != nil {
+			return fmt.Errorf("update proton contact %q: %w", uid, updErr)
+		}
+		s.log.Info("merged proton↔carddav → proton", "uid", uid)
+		if refetched, refErr := s.proton.GetContactVCard(ctx, p.id); refErr != nil {
+			s.log.Warn("proton refetch after update failed; base may be stale", "uid", uid, "err", refErr)
+		} else {
+			protonBase = refetched
+		}
+	}
+
+	return s.saveBases(ctx, uid, c.etag, protonBase, merged)
+}
+
+// saveBases persists the per-side bases (and a hash for quick equality) for uid.
+func (s *Syncer) saveBases(ctx context.Context, uid, etag, protonBase, carddavBase string) error {
+	if err := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
+		UID:         uid,
+		ETag:        etag,
+		VCardHash:   hashString(carddavBase),
+		ProtonBase:  protonBase,
+		CardDAVBase: carddavBase,
+	}); err != nil {
+		return fmt.Errorf("upsert local contact %q: %w", uid, err)
+	}
+	return nil
+}
+
+// protonByUID fetches and decodes every Proton contact, keyed by vCard UID.
+func (s *Syncer) protonByUID(ctx context.Context) (map[string]contactSide, error) {
+	contacts, err := s.proton.ListContacts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list proton contacts: %w", err)
+	}
+
+	out := make(map[string]contactSide, len(contacts))
+	for _, ct := range contacts {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		v, vcErr := s.proton.GetContactVCard(ctx, ct.ID)
+		if vcErr != nil {
+			s.log.Warn("skip proton contact: get vcard failed", "contact_id", ct.ID, "err", vcErr)
+			continue
+		}
+		out[extractUID(v, ct.ID)] = contactSide{id: ct.ID, vcard: v}
+	}
+	return out, nil
+}
+
+// carddavIndex returns the current CardDAV contacts keyed by vCard UID.
+func (s *Syncer) carddavIndex(ctx context.Context) (map[string]contactSide, error) {
+	objects, err := s.carddav.ListContacts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list carddav contacts: %w", err)
+	}
+
+	out := make(map[string]contactSide, len(objects))
+	for _, obj := range objects {
+		var buf bytes.Buffer
+		if encErr := vcard.NewEncoder(&buf).Encode(obj.Card); encErr != nil {
+			s.log.Warn("skip carddav contact in index: encode failed", "path", obj.Path, "err", encErr)
+			continue
+		}
+		str := buf.String()
+		out[extractUID(str, obj.Path)] = contactSide{etag: obj.ETag, vcard: str}
+	}
+	return out, nil
 }
 
 func extractUID(raw, fallback string) string {

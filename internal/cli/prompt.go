@@ -68,6 +68,9 @@ func gatherConfigInteractively() (*config.Config, error) {
 	if cfg.Sync.Direction, err = promptLine(r, "Sync direction (both|proton-to-carddav|carddav-to-proton)", "both"); err != nil {
 		return nil, err
 	}
+	if cfg.Sync.Conflict, err = promptLine(r, "Conflict policy (prefer-newer|prefer-proton|prefer-carddav)", "prefer-newer"); err != nil {
+		return nil, err
+	}
 
 	intervalStr, err := promptLine(r, "Sync interval (seconds)", "300")
 	if err != nil {

@@ -66,6 +66,7 @@ edit it by hand). No secrets are stored in this file.
 | `carddav.url` | — | Full CardDAV collection URL |
 | `carddav.username` | — | CardDAV username |
 | `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
+| `sync.conflict` | `prefer-newer` | Conflict policy for `both`: `prefer-newer` / `prefer-proton` / `prefer-carddav` |
 | `sync.interval_seconds` | `300` | Daemon sync interval, in seconds |
 | `database.path` | `~/.local/share/…/sync.db` | SQLite state database path |
 | `log.level` | `info` | `debug` / `info` / `warn` / `error` |
@@ -81,25 +82,39 @@ edit it by hand). No secrets are stored in this file.
 
 ## Sync behaviour
 
-Proton models far fewer vCard properties than a typical CardDAV server. To avoid
-losing data, the **Proton → CardDAV** direction does a **field-level overlay**
-rather than a whole-record overwrite: it loads the existing CardDAV contact and
-applies only the properties Proton carries on top of it. So if you change a
-phone number in Proton, that number updates in CardDAV while CardDAV-only
-properties (notes, extra fields, `X-` extensions, …) are preserved. The
-**CardDAV → Proton** direction sends the full CardDAV card (Proton stores what it
-can model).
+Proton models far fewer vCard properties than a typical CardDAV server, so a
+bidirectional sync (`direction: both`) does a **per-property three-way merge**
+rather than a whole-record overwrite. For each contact it keeps the last-synced
+vCard of *each* side (stored in the local database) and compares the current
+value of every property against that side's own base:
 
-Limitations of the overlay (no base snapshot is kept, so there is no true
-three-way merge yet):
+- changed on **one side only** → that side's value wins (an edit, an addition,
+  or a **deletion**);
+- changed on **both sides** to the same value → that value;
+- changed on **both sides differently** → a genuine conflict, resolved by
+  `sync.conflict` (`prefer-newer` by REV, `prefer-proton`, or `prefer-carddav`);
+- changed on **neither** → kept as-is.
 
-- **Deletions on the Proton side do not propagate.** Removing a property in
-  Proton leaves it intact in CardDAV (the overlay can't tell "deleted" from
-  "never modelled").
-- For a property Proton *does* model (e.g. `TEL`, `EMAIL`), Proton's values
-  replace CardDAV's for that property. Whole CardDAV-only properties are always
-  kept; individual values dropped *within* a Proton-modelled property are not
-  recoverable without a full three-way merge.
+Because each side is compared against its *own* base, Proton's lossy round-trip
+is safe: a property Proton never models is absent from both Proton's base and
+its current card, so it never looks "changed" and the CardDAV value is
+preserved. Concretely: change a phone number in Proton and it updates in CardDAV
+while notes, extra fields, and `X-` extensions are untouched; later add a note in
+CardDAV and it is kept while Proton is unaffected; delete a field on either side
+and the deletion propagates.
+
+The one-way directions (`proton-to-carddav` / `carddav-to-proton`) push a single
+way: Proton→CardDAV uses a field-level overlay (preserving CardDAV-only fields);
+CardDAV→Proton sends the full card.
+
+Remaining limitations:
+
+- **Whole-contact deletion is not synced.** Deleting an entire contact on one
+  side is left alone on the other (never auto-deleted or resurrected) — only
+  *field*-level deletions within a contact propagate.
+- Introducing the *first* value of a property type that Proton can model but the
+  contact never had (e.g. a contact that had no phone at all) may not push to
+  Proton until another Proton-modelled field on that contact also changes.
 
 ## Troubleshooting
 
