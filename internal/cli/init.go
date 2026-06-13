@@ -42,13 +42,19 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 
-	// The master key comes from the environment so init and the daemon agree
-	// on the same value. go-logging: the key value is never logged.
+	// The master key comes from the environment so init and the daemon agree on
+	// the same value. If it is not set, generate one and surface it at the end
+	// so the user can configure the daemon with it.
+	// go-logging: the key value is never logged (only printed once, on stdout).
 	encKey := os.Getenv(syncer.EncryptionKeyEnv)
+	generatedKey := false
 	if encKey == "" {
-		return fmt.Errorf("%s environment variable not set; "+
-			"export it (and reuse the same value for the daemon) before running init",
-			syncer.EncryptionKeyEnv)
+		key, genErr := crypto.NewRandomKey()
+		if genErr != nil {
+			return genErr
+		}
+		encKey = key
+		generatedKey = true
 	}
 
 	cfg, err := loadOrCreateConfig(cfgFile)
@@ -119,6 +125,20 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println("Credentials stored successfully.")
+
+	if generatedKey {
+		fmt.Printf(`
+%s was not set, so a new master key was generated:
+
+    %s=%s
+
+Set this in the environment before running 'sync' or 'run' (e.g. add it to your
+shell profile or the systemd EnvironmentFile). Store it somewhere safe — it is
+required to decrypt your credentials and CANNOT be recovered. Without it you
+must run 'init' again.
+`, syncer.EncryptionKeyEnv, syncer.EncryptionKeyEnv, encKey)
+	}
+
 	return nil
 }
 

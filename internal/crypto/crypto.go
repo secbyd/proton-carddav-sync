@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,16 @@ const (
 	saltLen    = 32
 	pbkdf2Iter = 200_000
 )
+
+// NewRandomKey returns a cryptographically random, URL-safe base64 string
+// suitable for use as PCS_ENCRYPTION_KEY (256 bits of entropy).
+func NewRandomKey() (string, error) {
+	buf := make([]byte, keyLen)
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+		return "", fmt.Errorf("generate random key: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
 
 // DeriveKey derives a 256-bit AES key from password using PBKDF2-SHA256.
 // It generates a fresh random salt and returns (key, salt, error).
