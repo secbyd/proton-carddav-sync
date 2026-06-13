@@ -1,3 +1,4 @@
+// Package syncer — credential bootstrap from environment.
 package syncer
 
 import (
@@ -10,21 +11,18 @@ import (
 	"github.com/secbyd/proton-carddav-sync/internal/db"
 )
 
-// loadDecryptedCredentials retrieves the encrypted credentials from the DB,
-// decrypts them using the stored salt, and returns plaintext passwords.
+// LoadDecryptedCredentials retrieves encrypted credentials from the DB and
+// decrypts them using the Proton password from the PROTON_PASSWORD environment
+// variable.
 //
-// The decryption key is re-derived from the Proton password itself.
-// At init time the user provided the password interactively; for daemon
-// operation the password must be supplied via an environment variable or a
-// secrets manager (e.g. a systemd EnvironmentFile).
-func loadDecryptedCredentials(ctx context.Context, sqlDB *sql.DB) (protonPass, cardDAVPass string, err error) {
+// go-logging: PROTON_PASSWORD value is never logged (no secrets in logs).
+// go-context: ctx is the first parameter, not stored.
+func LoadDecryptedCredentials(ctx context.Context, sqlDB *sql.DB) (protonPass, cardDAVPass string, err error) {
 	creds, err := db.LoadCredentials(ctx, sqlDB)
 	if err != nil {
 		return "", "", fmt.Errorf("load credentials from db: %w", err)
 	}
 
-	// Bootstrap from the PROTON_PASSWORD environment variable
-	// (systemd EnvironmentFile pattern).
 	protonPassEnv := os.Getenv("PROTON_PASSWORD")
 	if protonPassEnv == "" {
 		return "", "", fmt.Errorf(

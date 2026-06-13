@@ -1,198 +1,180 @@
+// Package syncer orchestrates bidirectional Proton ↔ CardDAV contact sync.
 package syncer
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
+
+	"github.com/emersion/go-vcard"
 
 	"github.com/secbyd/proton-carddav-sync/internal/carddav"
-	"github.com/secbyd/proton-carddav-sync/internal/config"
-	"github.com/secbyd/proton-carddav-sync/internal/db"
+	dbpkg "github.com/secbyd/proton-carddav-sync/internal/db"
 	"github.com/secbyd/proton-carddav-sync/internal/protonmail"
-	"github.com/secbyd/proton-carddav-sync/internal/vcardsync"
-	"go.uber.org/zap"
 )
 
-// Syncer orchestrates bidirectional contact synchronisation.
+// Direction controls which way contacts are synchronised.
+type Direction int
+
+const (
+	// DirectionBoth syncs in both directions.
+	DirectionBoth Direction = iota + 1 // go-defensive: iota+1 so zero == uninitialized
+	// DirectionToCardDAV only pushes Proton contacts to CardDAV.
+	DirectionToCardDAV
+	// DirectionToProton only pushes CardDAV contacts to Proton.
+	DirectionToProton
+)
+
+// Syncer orchestrates contact synchronisation.
+// It does not store a context — contexts are passed to each method
+// (go-context: never store context in a struct).
 type Syncer struct {
-	cfg    *config.Config
-	db     *sql.DB
-	log    *zap.SugaredLogger
-	proton *protonmail.Client
-	cdav   *carddav.Client
+	proton  protonmail.ContactsClient
+	carddav carddav.ContactsClient
+	db      *sql.DB
+	log     *slog.Logger
+	dir     Direction
 }
 
-// New constructs a Syncer, loading and decrypting credentials from the DB.
-func New(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, logger *zap.SugaredLogger) (*Syncer, error) {
-	protonPass, cardDAVPass, err := loadDecryptedCredentials(ctx, sqlDB)
-	if err != nil {
-		return nil, fmt.Errorf("load credentials: %w", err)
-	}
-
-	pmClient, err := protonmail.NewClient(ctx, cfg.Proton.Username, protonPass)
-	if err != nil {
-		return nil, fmt.Errorf("proton client: %w", err)
-	}
-
-	cdavClient, err := carddav.New(cfg.CardDAV.URL, cfg.CardDAV.Username, cardDAVPass)
-	if err != nil {
-		pmClient.Close()
-		return nil, fmt.Errorf("carddav client: %w", err)
-	}
-
+// New constructs a Syncer.
+// Accepts interfaces (go-interfaces: accept interfaces, return concrete types).
+func New(
+	protonClient protonmail.ContactsClient,
+	carddavClient carddav.ContactsClient,
+	db *sql.DB,
+	log *slog.Logger,
+	dir Direction,
+) *Syncer {
 	return &Syncer{
-		cfg:    cfg,
-		db:     sqlDB,
-		log:    logger,
-		proton: pmClient,
-		cdav:   cdavClient,
-	}, nil
+		proton:  protonClient,
+		carddav: carddavClient,
+		db:      db,
+		log:     log,
+		dir:     dir,
+	}
 }
 
-// Close logs out and frees resources.
-func (s *Syncer) Close() {
-	s.proton.Close()
-}
-
-// Sync performs one full bidirectional sync pass.
+// Sync performs one full synchronisation cycle.
 func (s *Syncer) Sync(ctx context.Context) error {
-	strategy := vcardsync.Strategy(s.cfg.Sync.MergeStrategy)
-	direction := s.cfg.Sync.Direction
-
-	// --- Fetch from both sides -----------------------------------------------
-	s.log.Info("Fetching Proton contacts")
-	protonContacts, err := s.proton.GetAllContacts(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch proton contacts: %w", err)
-	}
-	s.log.Infof("Proton: %d contacts", len(protonContacts))
-
-	s.log.Info("Fetching CardDAV contacts")
-	cdavContacts, err := s.cdav.ListAll(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch carddav contacts: %w", err)
-	}
-	s.log.Infof("CardDAV: %d contacts", len(cdavContacts))
-
-	// --- Build index: uid -> record ------------------------------------------
-	dbRecords, err := db.ListContacts(ctx, s.db)
-	if err != nil {
-		return fmt.Errorf("list db contacts: %w", err)
-	}
-	byUID := make(map[string]*db.ContactRecord, len(dbRecords))
-	for _, r := range dbRecords {
-		byUID[r.UID] = r
-	}
-
-	// --- Proton → CardDAV ---------------------------------------------------
-	if direction == "both" || direction == "proton-to-carddav" {
-		for protonID, vcardData := range protonContacts {
-			if err := s.syncProtonToCardDAV(ctx, protonID, vcardData, byUID, strategy); err != nil {
-				s.log.Warnf("Proton→CardDAV error for %q: %v", protonID, err)
-			}
+	if s.dir == DirectionBoth || s.dir == DirectionToCardDAV {
+		if err := s.syncProtonToCardDAV(ctx); err != nil {
+			return fmt.Errorf("proton→carddav: %w", err)
 		}
 	}
-
-	// --- CardDAV → Proton ---------------------------------------------------
-	if direction == "both" || direction == "carddav-to-proton" {
-		for _, entry := range cdavContacts {
-			if err := s.syncCardDAVToProton(ctx, entry, byUID, strategy); err != nil {
-				s.log.Warnf("CardDAV→Proton error for %q: %v", entry.Href, err)
-			}
+	if s.dir == DirectionBoth || s.dir == DirectionToProton {
+		if err := s.syncCardDAVToProton(ctx); err != nil {
+			return fmt.Errorf("carddav→proton: %w", err)
 		}
 	}
-
 	return nil
 }
 
-// syncProtonToCardDAV propagates a single Proton contact to CardDAV.
-func (s *Syncer) syncProtonToCardDAV(
-	ctx context.Context,
-	protonID, vcardData string,
-	byUID map[string]*db.ContactRecord,
-	strategy vcardsync.Strategy,
-) error {
-	uid, err := vcardsync.GetUID(vcardData)
-	if err != nil || uid == "" {
-		s.log.Debugf("Skipping Proton contact %q: no UID", protonID)
-		return nil
+func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
+	contacts, err := s.proton.ListContacts(ctx)
+	if err != nil {
+		return fmt.Errorf("list proton contacts: %w", err)
 	}
 
-	existing, ok := byUID[uid]
-	if !ok {
-		// New on Proton side – push to CardDAV.
-		s.log.Infof("New Proton contact %q → CardDAV", uid)
-		href, err := s.cdav.Put(ctx, "", vcardData)
-		if err != nil {
-			return err
+	for _, c := range contacts {
+		// go-context: check cancellation in loops.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
-		return db.UpsertContact(ctx, s.db, &db.ContactRecord{
-			UID: uid, ProtonID: protonID, CardDAVHref: href, VCardData: vcardData,
-		})
-	}
 
-	// Already known – check if Proton side changed.
-	if existing.VCardData == vcardData {
-		return nil // no change
-	}
+		vcardStr, err := s.proton.GetContactVCard(ctx, c.ID)
+		if err != nil {
+			// go-logging: warn and skip per-contact errors (log OR return, not both).
+			s.log.Warn("skip proton contact: get vcard failed",
+				"contact_id", c.ID, "err", err)
+			continue
+		}
 
-	// Merge and push to CardDAV.
-	merged, err := vcardsync.Merge(existing.VCardData, vcardData, existing.VCardData, strategy)
-	if err != nil {
-		return fmt.Errorf("merge: %w", err)
+		uid := extractUID(vcardStr, c.ID)
+
+		if err := s.carddav.PutContact(ctx, uid, vcardStr); err != nil {
+			return fmt.Errorf("put carddav contact %q: %w", uid, err)
+		}
+
+		s.log.Info("synced proton→carddav", "uid", uid)
+
+		if err := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
+			UID:       uid,
+			VCardHash: hashString(vcardStr),
+		}); err != nil {
+			return fmt.Errorf("upsert local contact %q: %w", uid, err)
+		}
 	}
-	s.log.Infof("Updated Proton contact %q → CardDAV", uid)
-	href, err := s.cdav.Put(ctx, existing.CardDAVHref, merged)
-	if err != nil {
-		return err
-	}
-	existing.VCardData = merged
-	existing.CardDAVHref = href
-	return db.UpsertContact(ctx, s.db, existing)
+	return nil
 }
 
-// syncCardDAVToProton propagates a single CardDAV contact to Proton.
-func (s *Syncer) syncCardDAVToProton(
-	ctx context.Context,
-	entry *carddav.ContactEntry,
-	byUID map[string]*db.ContactRecord,
-	strategy vcardsync.Strategy,
-) error {
-	uid, err := vcardsync.GetUID(entry.VCard)
-	if err != nil || uid == "" {
-		s.log.Debugf("Skipping CardDAV contact %q: no UID", entry.Href)
-		return nil
-	}
-
-	existing, ok := byUID[uid]
-	if !ok {
-		// New on CardDAV side – push to Proton.
-		s.log.Infof("New CardDAV contact %q → Proton", uid)
-		protonID, err := s.proton.CreateContact(ctx, entry.VCard)
-		if err != nil {
-			return err
-		}
-		return db.UpsertContact(ctx, s.db, &db.ContactRecord{
-			UID: uid, ProtonID: protonID, CardDAVHref: entry.Href,
-			CardDAVETag: entry.ETag, VCardData: entry.VCard,
-		})
-	}
-
-	// Already known – check if CardDAV side changed.
-	if existing.CardDAVETag == entry.ETag {
-		return nil // no change
-	}
-
-	// Merge and push to Proton.
-	merged, err := vcardsync.Merge(existing.VCardData, existing.VCardData, entry.VCard, strategy)
+func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
+	objects, err := s.carddav.ListContacts(ctx)
 	if err != nil {
-		return fmt.Errorf("merge: %w", err)
+		return fmt.Errorf("list carddav contacts: %w", err)
 	}
-	s.log.Infof("Updated CardDAV contact %q → Proton", uid)
-	if err := s.proton.UpdateContact(ctx, existing.ProtonID, merged); err != nil {
-		return err
+
+	for _, obj := range objects {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		var sb strings.Builder
+		if obj.Data != nil {
+			if _, err := sb.ReadFrom(obj.Data); err != nil {
+				s.log.Warn("skip carddav contact: read data failed",
+					"path", obj.Path, "err", err)
+				continue
+			}
+		}
+		vcardStr := sb.String()
+		uid := extractUID(vcardStr, obj.Path)
+
+		rec, err := dbpkg.GetContact(ctx, s.db, uid)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := s.proton.CreateContact(ctx, vcardStr); err != nil {
+				return fmt.Errorf("create proton contact %q: %w", uid, err)
+			}
+		case err != nil:
+			return fmt.Errorf("get local contact %q: %w", uid, err)
+		default:
+			newHash := hashString(vcardStr)
+			if rec.VCardHash == newHash {
+				continue
+			}
+			if err := s.proton.UpdateContact(ctx, rec.UID, vcardStr); err != nil {
+				return fmt.Errorf("update proton contact %q: %w", uid, err)
+			}
+		}
+
+		s.log.Info("synced carddav→proton", "uid", uid)
+
+		if err := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
+			UID:       uid,
+			ETag:      obj.ETag,
+			VCardHash: hashString(vcardStr),
+		}); err != nil {
+			return fmt.Errorf("upsert local contact %q: %w", uid, err)
+		}
 	}
-	existing.VCardData = merged
-	existing.CardDAVETag = entry.ETag
-	return db.UpsertContact(ctx, s.db, existing)
+	return nil
+}
+
+func extractUID(raw, fallback string) string {
+	dec := vcard.NewDecoder(strings.NewReader(raw))
+	card, err := dec.Decode()
+	if err != nil {
+		return fallback
+	}
+	if f := card.Get(vcard.FieldUID); f != nil && f.Value != "" {
+		return f.Value
+	}
+	return fallback
 }

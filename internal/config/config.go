@@ -1,6 +1,8 @@
+// Package config loads and validates the application configuration.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,68 +11,119 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config holds all runtime configuration.
+// Sentinel errors for configuration validation.
+var (
+	// ErrMissingProtonUsername is returned when the Proton username is empty.
+	ErrMissingProtonUsername = errors.New("proton username is required")
+	// ErrMissingCardDAVURL is returned when the CardDAV server URL is empty.
+	ErrMissingCardDAVURL = errors.New("carddav server URL is required")
+	// ErrMissingCardDAVUsername is returned when the CardDAV username is empty.
+	ErrMissingCardDAVUsername = errors.New("carddav username is required")
+)
+
+// Config holds all application configuration.
 type Config struct {
-	Proton struct {
-		Username string `mapstructure:"username"`
-		TOTP     string `mapstructure:"totp"`
-	} `mapstructure:"proton"`
-
-	CardDAV struct {
-		URL      string `mapstructure:"url"`
-		Username string `mapstructure:"username"`
-		Password string `mapstructure:"password"`
-	} `mapstructure:"carddav"`
-
-	Sync struct {
-		Direction     string `mapstructure:"direction"`
-		MergeStrategy string `mapstructure:"merge_strategy"`
-		Interval      string `mapstructure:"interval"`
-	} `mapstructure:"sync"`
-
-	DB struct {
-		Path string `mapstructure:"path"`
-	} `mapstructure:"db"`
-
-	Log struct {
-		Level  string `mapstructure:"level"`
-		Format string `mapstructure:"format"`
-	} `mapstructure:"log"`
+	Proton   ProtonConfig   `mapstructure:"proton"`
+	CardDAV  CardDAVConfig  `mapstructure:"carddav"`
+	Sync     SyncConfig     `mapstructure:"sync"`
+	Database DatabaseConfig `mapstructure:"database"`
+	Log      LogConfig      `mapstructure:"log"`
 }
 
-// Load reads configuration from viper and applies defaults.
-func Load() (*Config, error) {
-	setDefaults()
+// ProtonConfig holds Proton Mail connection settings.
+type ProtonConfig struct {
+	Username string `mapstructure:"username"`
+}
+
+// CardDAVConfig holds CardDAV server connection settings.
+type CardDAVConfig struct {
+	URL      string `mapstructure:"url"`
+	Username string `mapstructure:"username"`
+}
+
+// SyncConfig holds synchronisation behaviour settings.
+type SyncConfig struct {
+	IntervalSeconds int    `mapstructure:"interval_seconds"`
+	Direction       string `mapstructure:"direction"`
+}
+
+// DatabaseConfig holds SQLite storage settings.
+type DatabaseConfig struct {
+	Path string `mapstructure:"path"`
+}
+
+// LogConfig holds logging settings.
+type LogConfig struct {
+	Level  string `mapstructure:"level"`
+	Format string `mapstructure:"format"`
+}
+
+// Load reads configuration from the given file path.
+// It returns a validated *Config or a descriptive error.
+func Load(cfgFile string) (*Config, error) {
+	v := viper.New()
+
+	setDefaults(v)
+
+	if cfgFile != "" {
+		v.SetConfigFile(expandHome(cfgFile))
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		v.AddConfigPath("$HOME/.config/proton-carddav-sync")
+		v.AddConfigPath(".")
+	}
+
+	if err := v.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
 
 	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
-	cfg.DB.Path = expandPath(cfg.DB.Path)
+	if err := validate(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
-	// Ensure DB directory exists.
-	if err := os.MkdirAll(filepath.Dir(cfg.DB.Path), 0o700); err != nil {
-		return nil, fmt.Errorf("create db dir: %w", err)
+	// Ensure the database directory exists.
+	dbDir := filepath.Dir(expandHome(cfg.Database.Path))
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create database directory %q: %w", dbDir, err)
 	}
 
 	return &cfg, nil
 }
 
-func setDefaults() {
-	home, _ := os.UserHomeDir()
-	viper.SetDefault("sync.direction", "both")
-	viper.SetDefault("sync.merge_strategy", "prefer-newer")
-	viper.SetDefault("sync.interval", "15m")
-	viper.SetDefault("db.path", filepath.Join(home, ".local", "share", "proton-carddav-sync", "sync.db"))
-	viper.SetDefault("log.level", "info")
-	viper.SetDefault("log.format", "text")
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("sync.interval_seconds", 300)
+	v.SetDefault("sync.direction", "both")
+	v.SetDefault("database.path", "~/.local/share/proton-carddav-sync/sync.db")
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.format", "text")
 }
 
-func expandPath(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, p[2:])
+func validate(cfg *Config) error {
+	if strings.TrimSpace(cfg.Proton.Username) == "" {
+		return ErrMissingProtonUsername
 	}
-	return p
+	if strings.TrimSpace(cfg.CardDAV.URL) == "" {
+		return ErrMissingCardDAVURL
+	}
+	if strings.TrimSpace(cfg.CardDAV.Username) == "" {
+		return ErrMissingCardDAVUsername
+	}
+	return nil
+}
+
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }

@@ -1,44 +1,33 @@
+// Package log provides a thin slog-based logger constructor.
+//
+// Follows go-logging skill: use log/slog for new Go code; structured
+// key-value pairs; snake_case keys; no third-party library unless profiling
+// shows slog is a bottleneck.
 package log
 
 import (
-	"fmt"
-	"strings"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
+	"log/slog"
+	"os"
 )
 
-// New creates a zap sugared logger configured with the given level and format.
-// level: debug | info | warn | error
-// format: text | json
-func New(level, format string) (*zap.SugaredLogger, error) {
-	var zapLevel zapcore.Level
-	switch strings.ToLower(level) {
-	case "debug":
-		zapLevel = zapcore.DebugLevel
-	case "info", "":
-		zapLevel = zapcore.InfoLevel
-	case "warn", "warning":
-		zapLevel = zapcore.WarnLevel
-	case "error":
-		zapLevel = zapcore.ErrorLevel
-	default:
-		return nil, fmt.Errorf("unknown log level %q", level)
+// New returns a *slog.Logger writing to stderr.
+//
+// format must be "json" or "text" (anything else defaults to text).
+// level is the minimum level string: "debug", "info", "warn", "error".
+func New(format, levelStr string) *slog.Logger {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(levelStr)); err != nil {
+		level = slog.LevelInfo
 	}
 
-	var cfg zap.Config
-	switch strings.ToLower(format) {
-	case "json":
-		cfg = zap.NewProductionConfig()
-	default:
-		cfg = zap.NewDevelopmentConfig()
-		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	}
-	cfg.Level = zap.NewAtomicLevelAt(zapLevel)
+	opts := &slog.HandlerOptions{Level: level}
 
-	logger, err := cfg.Build()
-	if err != nil {
-		return nil, fmt.Errorf("build logger: %w", err)
+	var handler slog.Handler
+	if format == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
-	return logger.Sugar(), nil
+
+	return slog.New(handler)
 }

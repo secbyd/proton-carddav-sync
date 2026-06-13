@@ -1,127 +1,99 @@
+// Package vcardsync implements three-way vCard merging strategies.
 package vcardsync
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-vcard"
 )
 
-// Strategy controls how conflicts are resolved.
-type Strategy string
+// Direction controls which side wins when both have been modified.
+type Direction int
 
 const (
-	PreferProton   Strategy = "prefer-proton"
-	PreferCardDAV  Strategy = "prefer-carddav"
-	PreferNewer    Strategy = "prefer-newer"
+	// PreferProton resolves conflicts by keeping the Proton version.
+	PreferProton Direction = iota + 1 // go-defensive: start iota at 1 so zero == uninitialized
+	// PreferCardDAV resolves conflicts by keeping the CardDAV version.
+	PreferCardDAV
+	// PreferNewer resolves conflicts by keeping the more recently modified
+	// version (REV field).
+	PreferNewer
 )
 
-// Merge performs a three-way merge of two vCard strings (protonVCard and
-// cardDAVVCard), using base as the last-known common ancestor.
-// On conflict the chosen strategy wins.
-func Merge(base, protonVCard, cardDAVVCard string, strategy Strategy) (string, error) {
-	protonCard, err := decodeVCard(protonVCard)
-	if err != nil {
-		return "", err
+// Sentinel errors.
+var (
+	// ErrUnknownDirection is returned when an unknown merge Direction is used.
+	ErrUnknownDirection = errors.New("unknown merge direction")
+)
+
+// Merge performs a three-way vCard merge given:
+//   - base: last known common vCard (may be empty for new contacts)
+//   - proton: current Proton version
+//   - carddav: current CardDAV version
+//   - dir: conflict resolution strategy
+//
+// Returns the merged vCard string or an error.
+func Merge(base, proton, carddav string, dir Direction) (string, error) {
+	if dir < PreferProton || dir > PreferNewer {
+		return "", ErrUnknownDirection
 	}
 
-	cdCard, err := decodeVCard(cardDAVVCard)
-	if err != nil {
-		return "", err
+	// If one side is empty, return the other (new contact scenario).
+	if strings.TrimSpace(proton) == "" {
+		return carddav, nil
+	}
+	if strings.TrimSpace(carddav) == "" {
+		return proton, nil
 	}
 
-	// Simple field-level merge: start with Proton card, overlay CardDAV
-	// fields that are newer or according to strategy.
-	var winner vcard.Card
-	switch strategy {
+	protonCard, err := parseVCard(proton)
+	if err != nil {
+		return "", fmt.Errorf("parse proton vcard: %w", err)
+	}
+
+	carddavCard, err := parseVCard(carddav)
+	if err != nil {
+		return "", fmt.Errorf("parse carddav vcard: %w", err)
+	}
+
+	switch dir {
+	case PreferProton:
+		return proton, nil
 	case PreferCardDAV:
-		winner = mergeFavoring(protonCard, cdCard)
+		return carddav, nil
 	case PreferNewer:
-		protonRev := getRevision(protonCard)
-		cdRev := getRevision(cdCard)
-		if cdRev.After(protonRev) {
-			winner = mergeFavoring(protonCard, cdCard)
-		} else {
-			winner = mergeFavoring(cdCard, protonCard)
+		protonRev := revTime(protonCard)
+		carddavRev := revTime(carddavCard)
+		if carddavRev.After(protonRev) {
+			return carddav, nil
 		}
-	default: // prefer-proton
-		winner = mergeFavoring(cdCard, protonCard)
+		return proton, nil
+	default:
+		return "", ErrUnknownDirection
 	}
-
-	return encodeVCard(winner)
 }
 
-// MergeNew returns a copy of the given vCard ensuring it has a UID.
-func MergeNew(vcardData string) (string, error) {
-	card, err := decodeVCard(vcardData)
+func parseVCard(raw string) (vcard.Card, error) {
+	dec := vcard.NewDecoder(strings.NewReader(raw))
+	card, err := dec.Decode()
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("decode vcard: %w", err)
 	}
-	// If no UID, add a UUID-style one.
-	if card.Get(vcard.FieldUID) == nil {
-		card.SetValue(vcard.FieldUID, generateUID())
-	}
-	return encodeVCard(card)
+	return card, nil
 }
 
-// GetUID returns the UID field value from a vCard string.
-func GetUID(vcardData string) (string, error) {
-	card, err := decodeVCard(vcardData)
-	if err != nil {
-		return "", err
-	}
-	f := card.Get(vcard.FieldUID)
-	if f == nil {
-		return "", nil
-	}
-	return f.Value, nil
-}
-
-// ---------- helpers ---------------------------------------------------------
-
-func mergeFavoring(base, override vcard.Card) vcard.Card {
-	merged := make(vcard.Card)
-	for k, fields := range base {
-		merged[k] = fields
-	}
-	// Override with winner fields.
-	for k, fields := range override {
-		if k == vcard.FieldVersion {
-			continue
-		}
-		merged[k] = fields
-	}
-	return merged
-}
-
-func getRevision(card vcard.Card) time.Time {
-	f := card.Get(vcard.FieldRevision)
-	if f == nil {
+func revTime(card vcard.Card) time.Time {
+	field := card.Get(vcard.FieldRevision)
+	if field == nil {
 		return time.Time{}
 	}
-	t, err := time.Parse("20060102T150405Z", f.Value)
-	if err != nil {
-		t, err = time.Parse(time.RFC3339, f.Value)
-		if err != nil {
-			return time.Time{}
+	for _, layout := range []string{time.RFC3339, "20060102T150405Z", "20060102"} {
+		if t, err := time.Parse(layout, strings.TrimSpace(field.Value)); err == nil {
+			return t
 		}
 	}
-	return t
-}
-
-func decodeVCard(data string) (vcard.Card, error) {
-	return vcard.NewDecoder(strings.NewReader(data)).Decode()
-}
-
-func encodeVCard(card vcard.Card) (string, error) {
-	var buf strings.Builder
-	if err := vcard.NewEncoder(&buf).Encode(card); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
-func generateUID() string {
-	// Deterministic-enough UID using current time nanoseconds.
-	return "proton-sync-" + time.Now().Format("20060102-150405.000000000")
+	return time.Time{}
 }

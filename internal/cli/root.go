@@ -1,22 +1,28 @@
+// Package cli defines the cobra command tree for proton-carddav-sync.
 package cli
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var cfgFile string
 
+// rootCmd is the base command when called without any sub-commands.
 var rootCmd = &cobra.Command{
 	Use:   "proton-carddav-sync",
-	Short: "Bidirectional sync between Proton Mail contacts and a CardDAV server",
+	Short: "Synchronise Proton Mail contacts with a CardDAV server",
+	Long: `proton-carddav-sync keeps your Proton Mail contacts in sync with any
+CardDAV server (Nextcloud, Radicale, iCloud, etc.).
+
+Run 'proton-carddav-sync init' once to store encrypted credentials, then
+'proton-carddav-sync run' to start the background daemon.`,
 }
 
-// Execute is the entry point called from main.
+// Execute adds all child commands to the root command and runs it.
+// Errors are written to stderr and the process exits with code 1.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -25,37 +31,10 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "",
-		"config file (default: ~/.config/proton-carddav-sync/config.yaml)")
+		"config file (default: $HOME/.config/proton-carddav-sync/config.yaml)")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(runCmd)
-}
-
-func initConfig() {
-	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
-	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cannot determine home directory:", err)
-			os.Exit(1)
-		}
-		defaultDir := filepath.Join(home, ".config", "proton-carddav-sync")
-		viper.AddConfigPath(defaultDir)
-		viper.SetConfigName("config")
-		viper.SetConfigType("yaml")
-	}
-
-	viper.AutomaticEnv()
-
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			fmt.Fprintln(os.Stderr, "error reading config:", err)
-			os.Exit(1)
-		}
-	}
 }

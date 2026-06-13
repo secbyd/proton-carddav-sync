@@ -1,101 +1,135 @@
+// Package carddav wraps go-webdav's CardDAV client.
 package carddav
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"path"
 	"strings"
 
-	"github.com/emersion/go-vcard"
-	"github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/carddav"
 )
 
-// Client wraps go-webdav's CardDAV client.
+// Sentinel errors.
+var (
+	// ErrAddressBookNotFound is returned when no address book is found on the
+	// server.
+	ErrAddressBookNotFound = errors.New("no address book found on server")
+)
+
+// ContactsClient is the interface consumed by the syncer for CardDAV contact
+// operations (go-interfaces: consumer owns the interface).
+//
+// Compile-time check that *Client satisfies ContactsClient.
+var _ ContactsClient = (*Client)(nil)
+
+// ContactsClient abstracts CardDAV operations for testability.
+type ContactsClient interface {
+	// ListContacts returns all contacts in the address book.
+	ListContacts(ctx context.Context) ([]carddav.AddressObject, error)
+	// PutContact creates or updates a contact by UID.
+	PutContact(ctx context.Context, uid, vcard string) error
+	// DeleteContact removes a contact by path.
+	DeleteContact(ctx context.Context, path string) error
+}
+
+// Client is a CardDAV contact client.
+// All methods are safe to call from a single goroutine.
 type Client struct {
-	client      *carddav.Client
-	collURL     string
+	inner       *carddav.Client
+	addressBook string
 }
 
-// New creates an authenticated CardDAV client.
-func New(serverURL, username, password string) (*Client, error) {
-	httpClient := webdav.HTTPClientWithBasicAuth(http.DefaultClient, username, password)
-	c, err := carddav.NewClient(httpClient, serverURL)
-	if err != nil {
-		return nil, fmt.Errorf("new carddav client: %w", err)
-	}
-	return &Client{client: c, collURL: serverURL}, nil
-}
-
-// ContactEntry is a CardDAV contact with its href, etag, and vCard data.
-type ContactEntry struct {
-	Href  string
-	ETag  string
-	VCard string
-}
-
-// ListAll fetches all contacts from the CardDAV collection.
-func (c *Client) ListAll(ctx context.Context) ([]*ContactEntry, error) {
-	query := &carddav.AddressBookQuery{
-		PropFilters: []carddav.PropFilter{},
-	}
-
-	objects, err := c.client.QueryAddressBook(ctx, c.collURL, query)
-	if err != nil {
-		return nil, fmt.Errorf("carddav query: %w", err)
-	}
-
-	entries := make([]*ContactEntry, 0, len(objects))
-	for _, obj := range objects {
-		var buf bytes.Buffer
-		for _, card := range obj.Data {
-			if err := vcard.NewEncoder(&buf).Encode(card); err != nil {
-				return nil, fmt.Errorf("encode vcard: %w", err)
-			}
+// New creates and connects a CardDAV client, resolving the first address book
+// found on the server.
+func New(ctx context.Context, serverURL, username, password string) (*Client, error) {
+	httpClient := &http.Client{}
+	if username != "" {
+		httpClient.Transport = basicAuthTransport{
+			base:     http.DefaultTransport,
+			username: username,
+			password: password,
 		}
-		entries = append(entries, &ContactEntry{
-			Href:  obj.Path,
-			ETag:  obj.ETag,
-			VCard: buf.String(),
-		})
 	}
-	return entries, nil
+
+	client, err := carddav.NewClient(httpClient, serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("create carddav client for %q: %w", serverURL, err)
+	}
+
+	// Discover the principal's address book path.
+	principal, err := client.FindCurrentUserPrincipal(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("find carddav principal: %w", err)
+	}
+
+	homeSet, err := client.FindAddressBookHomeSet(ctx, principal)
+	if err != nil {
+		return nil, fmt.Errorf("find address book home set: %w", err)
+	}
+
+	books, err := client.FindAddressBooks(ctx, homeSet)
+	if err != nil {
+		return nil, fmt.Errorf("find address books: %w", err)
+	}
+
+	if len(books) == 0 {
+		return nil, ErrAddressBookNotFound
+	}
+
+	return &Client{
+		inner:       client,
+		addressBook: books[0].Path,
+	}, nil
 }
 
-// Put creates or updates a contact at the given href (relative to collection).
-// If href is empty a new path is derived from the UID.
-func (c *Client) Put(ctx context.Context, href, vcardData string) (string, error) {
-	card, err := vcard.NewDecoder(strings.NewReader(vcardData)).Decode()
+// ListContacts returns all contacts in the address book.
+// The returned slice is always non-nil (go-defensive).
+func (c *Client) ListContacts(ctx context.Context) ([]carddav.AddressObject, error) {
+	objects, err := c.inner.QueryAddressBook(ctx, c.addressBook, &carddav.AddressBookQuery{
+		DataRequest: carddav.AddressDataRequest{AllProp: true},
+	})
 	if err != nil {
-		return "", fmt.Errorf("parse vcard: %w", err)
+		return nil, fmt.Errorf("query address book: %w", err)
 	}
 
-	if href == "" {
-		uid := card.Get(vcard.FieldUID)
-		if uid == nil || uid.Value == "" {
-			return "", fmt.Errorf("vcard missing UID")
-		}
-		href = path.Join(c.collURL, uid.Value+".vcf")
-	}
-
-	addr := &carddav.AddressObject{
-		Path: href,
-		Data: []vcard.Card{card},
-	}
-
-	etag, err := c.client.PutAddressObject(ctx, href, addr)
-	if err != nil {
-		return "", fmt.Errorf("put carddav object at %q: %w", href, err)
-	}
-	return etag, nil
+	// go-defensive: boundary copy.
+	out := make([]carddav.AddressObject, len(objects))
+	copy(out, objects)
+	return out, nil
 }
 
-// Delete removes a contact by its href.
-func (c *Client) Delete(ctx context.Context, href string) error {
-	if err := c.client.DeleteAddressObject(ctx, href); err != nil {
-		return fmt.Errorf("delete carddav object %q: %w", href, err)
+// PutContact creates or updates a contact at <addressBook>/<uid>.vcf.
+func (c *Client) PutContact(ctx context.Context, uid, vcard string) error {
+	path := strings.TrimRight(c.addressBook, "/") + "/" + uid + ".vcf"
+	obj := carddav.AddressObject{
+		Path: path,
+		Data: strings.NewReader(vcard),
+	}
+	if _, err := c.inner.PutAddressObject(ctx, path, &obj); err != nil {
+		return fmt.Errorf("put carddav contact %q: %w", uid, err)
 	}
 	return nil
+}
+
+// DeleteContact removes a contact by its server path.
+func (c *Client) DeleteContact(ctx context.Context, path string) error {
+	if err := c.inner.DeleteAddressObject(ctx, path); err != nil {
+		return fmt.Errorf("delete carddav contact at %q: %w", path, err)
+	}
+	return nil
+}
+
+// basicAuthTransport injects HTTP Basic Auth credentials into every request.
+type basicAuthTransport struct {
+	base     http.RoundTripper
+	username string
+	password string
+}
+
+func (t basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := req.Clone(req.Context())
+	r.SetBasicAuth(t.username, t.password)
+	return t.base.RoundTrip(r)
 }
