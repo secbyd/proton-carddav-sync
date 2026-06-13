@@ -1,0 +1,55 @@
+# golangci-lint configuration
+# https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  # go-sqlite3 requires CGO.
+  allow-parallel-runners: true
+
+linters:
+  enable:
+    - errcheck        # check that errors are handled
+    - govet           # go vet checks
+    - staticcheck     # staticcheck SA/S rules
+    - gosimple        # simplification suggestions
+    - ineffassign     # detect ineffectual assignments
+    - unused          # detect unused code
+    - gofmt           # enforce gofmt formatting
+    - goimports       # enforce import grouping
+    - misspell        # catch common typos
+    - godot           # enforce periods on comments
+    - noctx           # detect http requests without context
+    - bodyclose       # ensure http response bodies are closed
+    - contextcheck    # ensure context is propagated correctly
+    - nilerr          # detect `if err != nil { return nil }` patterns
+    - errorlint       # lint error wrapping (use %w, errors.Is/As)
+    - gosec           # security checks (crypto/rand, etc.)
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  govet:
+    enable-all: true
+  goimports:
+    local-prefixes: github.com/secbyd/proton-carddav-sync
+  godot:
+    scope: declarations
+    period: true
+  gosec:
+    excludes:
+      - G401  # sha1 use — flagged in hash.go, nolint comment already present
+      - G505  # sha1 import — same as above
+
+issues:
+  exclude-rules:
+    # sha1 in hash.go is intentional (change-detection only, not security).
+    - path: internal/syncer/hash\.go
+      linters: [gosec]
+      text: "G401|G505"
+    # Test helpers may use t.Fatal without returning.
+    - path: _test\.go
+      linters: [govet]
+      text: "loopclosure"
+  max-issues-per-linter: 0
+  max-same-issues: 0
