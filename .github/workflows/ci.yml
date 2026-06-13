@@ -28,6 +28,9 @@ jobs:
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
 
+      - name: Download modules (populate module cache)
+        run: go mod download
+
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
         run: |
           MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
@@ -66,6 +69,9 @@ jobs:
 
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
+
+      - name: Download modules (populate module cache)
+        run: go mod download
 
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
         run: |
@@ -108,6 +114,9 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+
+      - name: Download modules (populate module cache)
+        run: go mod download
 
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
         run: |
