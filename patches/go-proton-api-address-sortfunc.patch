@@ -1,0 +1,44 @@
+From: proton-carddav-sync patch
+Subject: [PATCH] fix address.go: update slices.SortFunc callback to Go 1.21 int-return signature
+
+Go 1.21 changed slices.SortFunc to require a comparison function that
+returns int (cmp-style: negative/zero/positive) instead of bool.
+go-proton-api v0.4.0 ships the old bool-returning form which causes a
+build failure with Go 1.21+.
+
+This patch replaces the bool-returning lambda with a cmp.Compare call,
+matching what upstream already does on its default branch.
+
+Apply with:
+  cd $(go env GOMODCACHE)/github.com/!proton!mail/go-proton-api@v0.4.0
+  chmod -R u+w .
+  patch -p1 < /path/to/patches/go-proton-api-address-sortfunc.patch
+
+Or use the gomod-replace workaround in go.mod (see README).
+---
+--- a/address.go
++++ b/address.go
+@@ -1,9 +1,10 @@
+ package proton
+ 
+ import (
++	"cmp"
+ 	"context"
+ 
+-	"golang.org/x/exp/slices"
++	"slices"
+ 
+ 	"github.com/go-resty/resty/v2"
+ )
+@@ -18,8 +19,8 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
+ 	}); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	slices.SortFunc(res.Addresses, func(a, b Address) bool {
+-		return a.Order < b.Order
++	slices.SortFunc(res.Addresses, func(a, b Address) int {
++		return cmp.Compare(a.Order, b.Order)
+ 	})
+ 
+ 	return res.Addresses, nil

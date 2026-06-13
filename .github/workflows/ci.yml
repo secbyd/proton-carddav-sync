@@ -28,6 +28,12 @@ jobs:
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
 
+      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          patch -p1 -d "$MOD" < patches/go-proton-api-address-sortfunc.patch
+
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
@@ -60,6 +66,12 @@ jobs:
 
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
+
+      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          patch -p1 -d "$MOD" < patches/go-proton-api-address-sortfunc.patch
 
       - name: Run tests
         run: go test -v -race -count=1 ./...
@@ -97,12 +109,17 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y gcc gcc-aarch64-linux-gnu
 
+      - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          patch -p1 -d "$MOD" < patches/go-proton-api-address-sortfunc.patch
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
-          # Use the cross-compiler for arm64 Linux targets.
           CC: ${{ matrix.goarch == 'arm64' && matrix.goos == 'linux' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
           mkdir -p dist

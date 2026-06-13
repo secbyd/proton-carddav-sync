@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/emersion/go-vcard"
 	"github.com/emersion/go-webdav/carddav"
 )
 
@@ -29,7 +30,7 @@ type ContactsClient interface {
 	// ListContacts returns all contacts in the address book.
 	ListContacts(ctx context.Context) ([]carddav.AddressObject, error)
 	// PutContact creates or updates a contact by UID.
-	PutContact(ctx context.Context, uid, vcard string) error
+	PutContact(ctx context.Context, uid, vcardStr string) error
 	// DeleteContact removes a contact by path.
 	DeleteContact(ctx context.Context, path string) error
 }
@@ -101,21 +102,31 @@ func (c *Client) ListContacts(ctx context.Context) ([]carddav.AddressObject, err
 }
 
 // PutContact creates or updates a contact at <addressBook>/<uid>.vcf.
-func (c *Client) PutContact(ctx context.Context, uid, vcard string) error {
+//
+// go-webdav v0.5.0: PutAddressObject accepts a vcard.Card value (not
+// *AddressObject). We parse the raw vCard string into a vcard.Card and
+// hand it to the upstream client.
+func (c *Client) PutContact(ctx context.Context, uid, vcardStr string) error {
 	path := strings.TrimRight(c.addressBook, "/") + "/" + uid + ".vcf"
-	obj := carddav.AddressObject{
-		Path: path,
-		Data: strings.NewReader(vcard),
+
+	card, err := vcard.NewDecoder(strings.NewReader(vcardStr)).Decode()
+	if err != nil {
+		return fmt.Errorf("parse vcard for %q: %w", uid, err)
 	}
-	if _, err := c.inner.PutAddressObject(ctx, path, &obj); err != nil {
+
+	if _, err := c.inner.PutAddressObject(ctx, path, card); err != nil {
 		return fmt.Errorf("put carddav contact %q: %w", uid, err)
 	}
 	return nil
 }
 
 // DeleteContact removes a contact by its server path.
+//
+// go-webdav v0.5.0: deletion is done via the embedded webdav.Client which
+// provides a RemoveAll method. The carddav.Client embeds *webdav.Client, so
+// we call webdav.Client.RemoveAll directly.
 func (c *Client) DeleteContact(ctx context.Context, path string) error {
-	if err := c.inner.DeleteAddressObject(ctx, path); err != nil {
+	if err := c.inner.RemoveAll(ctx, path); err != nil {
 		return fmt.Errorf("delete carddav contact at %q: %w", path, err)
 	}
 	return nil
