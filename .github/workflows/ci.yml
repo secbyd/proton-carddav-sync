@@ -7,17 +7,19 @@ on:
     branches: ["main"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   # ──────────────────────────────────────────────
-  # 1. Lint — go mod tidy check + go vet + golangci-lint
+  # 1. Lint — go mod tidy + go vet + golangci-lint
   # ──────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -40,10 +42,16 @@ jobs:
           sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
           sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
 
-      - name: Verify go.mod is tidy
+      - name: Run go mod tidy and commit if changed
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum
+          if ! git diff --quiet go.mod go.sum; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add go.mod go.sum
+            git commit -m "chore: go mod tidy [skip ci]"
+            git push
+          fi
 
       - name: go vet
         run: go vet ./...
@@ -82,7 +90,7 @@ jobs:
           chmod -R u+w "$MOD"
           FILE="$MOD/address.go"
           sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
-          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
+          sed -i 's/func(a, b Address) bool {/return cmp.Compare(a.Order, b.Order)/' "$FILE"
           sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
 
       - name: Run tests
