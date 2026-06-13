@@ -42,6 +42,30 @@ git apply patches/go-proton-api-address-sortfunc.patch  # or hand-apply the diff
 go build -mod=vendor ./...                               # verify
 ```
 
+## go-proton-api-auth-v3.patch
+
+**Affects:** `github.com/ProtonMail/go-proton-api v0.4.0`
+**Files patched:** `manager_auth.go`, `auth.go`
+**Vendored at:** `vendor/github.com/ProtonMail/go-proton-api/{manager_auth,auth}.go`
+
+**Root cause:** go-proton-api authenticates against Proton's **v4** auth
+endpoints (`/auth/v4/info`, `/auth/v4`, `/auth/v4/refresh`, `/auth/v4/2fa`,
+`/auth/v4/sessions`). The v4 auth flow is **CAPTCHA-gated** (API error `9001`,
+"please complete CAPTCHA") for non-browser clients — the same wall rclone's
+Proton backend hits. The legacy **v3** endpoints (`/auth/info`, `/auth`,
+`/auth/refresh`, …) used by hydroxide/ferroxide are not gated.
+
+**Fix:** rewrite the auth endpoint paths from `/auth/v4/...` to `/auth/...`.
+The SRP flow and request/response shapes are unchanged (Proton's v3 and v4 auth
+share them), so go-proton-api's `AuthInfo`/`Auth` structs unmarshal the v3
+responses unchanged. The client also sends `x-pm-apiversion: 3` and a browser
+`User-Agent` (set in `internal/protonmail/client.go`) to complete the
+hydroxide/ferroxide-style request. Verified against a live Proton account:
+login, keyring unlock, and refresh-token resume all succeed with no CAPTCHA.
+
+The maintenance rules are the same as the patch above — it lives in `vendor/`
+and `go mod vendor` will revert it.
+
 ### Preferred long-term fix
 
 Publish a forked release and add a `replace` directive, dropping the vendored

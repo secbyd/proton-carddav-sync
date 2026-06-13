@@ -14,7 +14,7 @@ func TestUserAgentTransportSetsHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rt := &userAgentTransport{base: http.DefaultTransport, ua: defaultUserAgent}
+	rt := &protonTransport{base: http.DefaultTransport, ua: defaultUserAgent}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)

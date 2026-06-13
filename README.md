@@ -83,31 +83,24 @@ edit it by hand). No secrets are stored in this file.
 
 ### Login fails with a CAPTCHA / "human verification" / "unusual activity" error
 
-This is Proton's anti-abuse **human verification** (API error `9001`), not a bug
-in how this tool talks to the API — it logs in through Proton's normal SRP auth
-flow. Proton enforces it on logins it deems bot-like or risky.
+Proton's anti-abuse **human verification** (API error `9001`) CAPTCHA-gates its
+**v4** auth endpoints for non-browser clients — the wall that rclone's Proton
+backend also hits. This tool avoids it the same way hydroxide/ferroxide do: it
+authenticates against Proton's **v3** auth endpoints (a vendored go-proton-api
+patch, see [patches/](patches/)) and sends a browser `User-Agent` and
+`x-pm-apiversion: 3`. With that, a headless `init` logs in normally.
 
-The biggest signal is the **User-Agent**: the underlying library otherwise sends
-a `go-resty/...` agent that Proton treats as a bot. This tool sends a real
-browser User-Agent by default (the same approach that lets hydroxide/ferroxide
-log in), which resolves the CAPTCHA for most accounts. If you still hit it:
+If you somehow still hit a CAPTCHA:
 
-1. **Match a real browser User-Agent and app version.** In your browser on
-   `mail.proton.me` (DevTools → Network), copy the exact `User-Agent` and
-   `x-pm-appversion` request headers and set `PCS_PROTON_USER_AGENT` and
-   `PCS_PROTON_APP_VERSION` to those values.
-2. **Sign in via the official Proton web/mobile app at least once** on the
-   account, so it is fully provisioned.
-3. **Run `init` from a residential connection** (datacenter/VPS/VPN IPs are
-   flagged hardest). Credentials are a portable, long-lasting session in the
-   SQLite database, so you can run `init` on your laptop at home and copy
+1. **Match your browser's exact headers.** On `mail.proton.me` (DevTools →
+   Network) copy the `User-Agent` and `x-pm-appversion` request headers and set
+   `PCS_PROTON_USER_AGENT` and `PCS_PROTON_APP_VERSION` to them.
+2. **Sign in via the official Proton web/mobile app at least once** so the
+   account is fully provisioned.
+3. **Run `init` from a residential connection**, then copy
    `~/.local/share/proton-carddav-sync/sync.db` (with the same
-   `PCS_ENCRYPTION_KEY`) to the server that runs the daemon.
-4. **Ask Proton to relax it** via the
-   [appeal-abuse form](https://proton.me/support/appeal-abuse), mentioning you
-   use a third-party client — the same advice the
-   [rclone Proton community](https://github.com/rclone/rclone/issues/9397) gives.
-5. **Wait and retry** — the limit is sometimes temporary.
+   `PCS_ENCRYPTION_KEY`) to the server — the stored session is portable.
+4. **Wait and retry** — the limit is sometimes temporary.
 
 ## Systemd Unit
 

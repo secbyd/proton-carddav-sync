@@ -15,20 +15,28 @@ import (
 // defaultUserAgent is a browser-like User-Agent. go-proton-api otherwise sends
 // resty's default ("go-resty/..."), which Proton's anti-abuse system treats as a
 // bot and answers with a CAPTCHA (human verification). Sending a real browser
-// User-Agent — as hydroxide/ferroxide do — is what lets a headless SRP login
-// through. Override with PCS_PROTON_USER_AGENT.
+// User-Agent — as hydroxide/ferroxide do — is part of what lets a headless SRP
+// login through. Override with PCS_PROTON_USER_AGENT.
 const defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
-// userAgentTransport overrides the User-Agent header on every request.
-type userAgentTransport struct {
+// protonAPIVersion matches the value hydroxide/ferroxide send. Together with the
+// patched v3 auth endpoints (see patches/go-proton-api-auth-v3.patch), this
+// reproduces the legacy auth flow that is not CAPTCHA-gated, unlike the v4 flow
+// go-proton-api uses by default.
+const protonAPIVersion = "3"
+
+// protonTransport injects the headers a real Proton web client sends — a browser
+// User-Agent and the API version — on every request.
+type protonTransport struct {
 	base http.RoundTripper
 	ua   string
 }
 
-func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *protonTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone per the RoundTripper contract (must not mutate the input request).
 	r := req.Clone(req.Context())
 	r.Header.Set("User-Agent", t.ua)
+	r.Header.Set("x-pm-apiversion", protonAPIVersion)
 	return t.base.RoundTrip(r)
 }
 
@@ -71,7 +79,7 @@ func NewClient(appVersion string) *Client {
 	}
 
 	opts := []proton.Option{
-		proton.WithTransport(&userAgentTransport{base: http.DefaultTransport, ua: ua}),
+		proton.WithTransport(&protonTransport{base: http.DefaultTransport, ua: ua}),
 	}
 	if appVersion != "" {
 		opts = append(opts, proton.WithAppVersion(appVersion))
