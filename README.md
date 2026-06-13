@@ -84,22 +84,30 @@ edit it by hand). No secrets are stored in this file.
 
 This is Proton's anti-abuse **human verification** (API error `9001`), not a bug
 in how this tool talks to the API — it logs in through Proton's normal SRP auth
-flow. Proton triggers it mainly on **server/VPS/datacenter and VPN IP addresses**
-(and, to a lesser degree, on unrecognized app versions).
+flow. Proton enforces it on non-browser logins based on connection/account
+risk, most aggressively on **server/VPS/datacenter and VPN IP addresses**. The
+same limitation affects other third-party Go clients such as
+[rclone's Proton Drive backend](https://github.com/rclone/rclone/issues/9397);
+there is no reliable in-client way to bypass it, so CLI CAPTCHA solving is not
+implemented here.
 
-Things to try, in order:
+Things to try, in order of effectiveness:
 
-1. **Run `init` from a trusted connection.** Because credentials are a portable,
-   long-lasting session stored in the SQLite database, you can run `init` on your
-   laptop at home, then copy `~/.local/share/proton-carddav-sync/sync.db` (and use
-   the same `PCS_ENCRYPTION_KEY`) to the server that runs the daemon.
-2. **Match a real app version.** Open `mail.proton.me` in your browser, find the
-   `x-pm-appversion` request header in the Network tab, and set
-   `PCS_PROTON_APP_VERSION` to that exact value.
-3. **Wait and retry** — the limit is sometimes temporary.
-
-Interactive CAPTCHA solving from the CLI is not yet implemented; the session you
-create on a trusted connection is the supported path for headless servers.
+1. **Ask Proton to relax it for your account.** Use the
+   [appeal-abuse form](https://proton.me/support/appeal-abuse) (linked in the
+   error) and say you use a third-party/rclone-style client. Proton can raise the
+   CAPTCHA threshold / whitelist your account — this is the most effective fix
+   the rclone community reports.
+2. **Sign in via the official Proton web app or mobile app at least once** on the
+   account first, so it is fully provisioned and your recent activity is known.
+3. **Run `init` from a trusted (residential) connection.** Credentials are a
+   portable, long-lasting session in the SQLite database, so you can run `init`
+   on your laptop at home, then copy `~/.local/share/proton-carddav-sync/sync.db`
+   (and reuse the same `PCS_ENCRYPTION_KEY`) to the server that runs the daemon.
+4. **Match a real app version.** Open `mail.proton.me`, copy the exact
+   `x-pm-appversion` request header (Network tab) and set `PCS_PROTON_APP_VERSION`
+   to it. This lowers the odds but does not override an IP-based block.
+5. **Wait and retry** — the limit is sometimes temporary.
 
 ## Systemd Unit
 
