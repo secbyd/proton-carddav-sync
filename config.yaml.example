@@ -1,0 +1,30 @@
+# proton-carddav-sync configuration example
+# Copy to config.yaml and fill in your values.
+
+proton:
+  # Your ProtonMail account credentials
+  username: "user@proton.me"
+  # Password is stored encrypted in the database after `init`.
+  # Do NOT put your plaintext password here in production.
+  password: ""
+  # Optional: 2FA TOTP secret (base32-encoded)
+  totp_secret: ""
+
+carddav:
+  # Full URL of your CardDAV server / address book
+  url: "https://dav.example.com/addressbooks/user/default/"
+  username: "dav-user"
+  # Password stored encrypted in DB after `init`.
+  password: ""
+
+sync:
+  # How often to run a full sync (e.g. 5m, 1h, 24h)
+  interval: "1h"
+  # Direction: both | proton-to-carddav | carddav-to-proton
+  direction: "both"
+  # Path to the SQLite database file
+  db_path: "~/.proton-carddav-sync/state.db"
+
+log:
+  level: "info"   # debug | info | warn | error
+  format: "text"  # text | json
