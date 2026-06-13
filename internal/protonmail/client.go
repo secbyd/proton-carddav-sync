@@ -5,10 +5,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 
 	proton "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
+
+// defaultUserAgent is a browser-like User-Agent. go-proton-api otherwise sends
+// resty's default ("go-resty/..."), which Proton's anti-abuse system treats as a
+// bot and answers with a CAPTCHA (human verification). Sending a real browser
+// User-Agent — as hydroxide/ferroxide do — is what lets a headless SRP login
+// through. Override with PCS_PROTON_USER_AGENT.
+const defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+// userAgentTransport overrides the User-Agent header on every request.
+type userAgentTransport struct {
+	base http.RoundTripper
+	ua   string
+}
+
+func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone per the RoundTripper contract (must not mutate the input request).
+	r := req.Clone(req.Context())
+	r.Header.Set("User-Agent", t.ua)
+	return t.base.RoundTrip(r)
+}
 
 // Sentinel errors.
 var (
@@ -43,7 +65,14 @@ type Client struct {
 // the x-pm-appversion header; the upstream default is rejected by Proton, so an
 // empty value falls back to nothing and the caller is expected to supply one.
 func NewClient(appVersion string) *Client {
-	opts := []proton.Option{}
+	ua := os.Getenv("PCS_PROTON_USER_AGENT")
+	if ua == "" {
+		ua = defaultUserAgent
+	}
+
+	opts := []proton.Option{
+		proton.WithTransport(&userAgentTransport{base: http.DefaultTransport, ua: ua}),
+	}
 	if appVersion != "" {
 		opts = append(opts, proton.WithAppVersion(appVersion))
 	}
