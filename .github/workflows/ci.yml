@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   # ──────────────────────────────────────────────
-  # 1. Lint — staticcheck + go vet
+  # 1. Lint — go mod tidy check + go vet + golangci-lint
   # ──────────────────────────────────────────────
   lint:
     name: Lint
@@ -27,6 +27,11 @@ jobs:
 
       - name: Install gcc (required by go-sqlite3 CGO)
         run: sudo apt-get install -y gcc
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
       - name: go vet
         run: go vet ./...
