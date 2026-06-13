@@ -2,10 +2,12 @@
 package protonmail
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
 	proton "github.com/ProtonMail/go-proton-api"
+	govcard "github.com/emersion/go-vcard"
 )
 
 // ContactsClient is the interface consumed by the syncer for Proton contact
@@ -73,8 +75,6 @@ func (c *Client) GetContactVCard(ctx context.Context, id string) (string, error)
 	}
 
 	// Encode the merged vcard.Card back to string.
-	import "bytes"
-	import govcard "github.com/emersion/go-vcard"
 	var buf bytes.Buffer
 	if err := govcard.NewEncoder(&buf).Encode(vcardData); err != nil {
 		return "", fmt.Errorf("encode contact vcard %q: %w", id, err)
