@@ -4,11 +4,13 @@ go 1.22
 
 require (
 	github.com/ProtonMail/go-proton-api v0.4.0
+	github.com/ProtonMail/gopenpgp/v2 v2.4.10
 	github.com/emersion/go-vcard v0.0.0-20230815062825-8fda7d206ec9
 	github.com/emersion/go-webdav v0.5.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
+	go.uber.org/zap v1.26.0
 	golang.org/x/crypto v0.23.0
 	golang.org/x/term v0.20.0
 )
@@ -19,7 +21,6 @@ require (
 	github.com/ProtonMail/go-crypto v0.0.0-20220824120805-4b6e5c587895 // indirect
 	github.com/ProtonMail/go-mime v0.0.0-20220429130430-2192574d760f // indirect
 	github.com/ProtonMail/go-srp v0.0.5 // indirect
-	github.com/ProtonMail/gopenpgp/v2 v2.4.10 // indirect
 	github.com/PuerkitoBio/goquery v1.8.0 // indirect
 	github.com/andybalholm/cascadia v1.3.1 // indirect
 	github.com/bradenaw/juniper v0.8.0 // indirect
