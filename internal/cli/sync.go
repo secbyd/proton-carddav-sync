@@ -78,6 +78,9 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	if cdErr != nil {
 		return fmt.Errorf("create carddav client: %w", cdErr)
 	}
+	log.Info("carddav connected",
+		"address_book", carddavClient.AddressBook(),
+		"address_books_found", carddavClient.AddressBookCount())
 
 	dir := parseSyncDirection(cfg.Sync.Direction)
 	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir, parseConflictPolicy(cfg.Sync.Conflict))

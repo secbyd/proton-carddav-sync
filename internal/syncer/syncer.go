@@ -240,6 +240,9 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 		return err
 	}
 
+	s.log.Info("reconcile: indexed contacts",
+		"proton", len(protonIdx), "carddav", len(carddavIdx))
+
 	uids := make(map[string]struct{}, len(protonIdx)+len(carddavIdx))
 	for uid := range protonIdx {
 		uids[uid] = struct{}{}

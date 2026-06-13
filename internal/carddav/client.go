@@ -40,7 +40,15 @@ type ContactsClient interface {
 type Client struct {
 	inner       *carddav.Client
 	addressBook string
+	bookCount   int
 }
+
+// AddressBook returns the path of the address book this client operates on.
+func (c *Client) AddressBook() string { return c.addressBook }
+
+// AddressBookCount returns how many address books were discovered on the server
+// (only the first is used).
+func (c *Client) AddressBookCount() int { return c.bookCount }
 
 // New creates and connects a CardDAV client, resolving the first address book
 // found on the server.
@@ -82,6 +90,7 @@ func New(ctx context.Context, serverURL, username, password string) (*Client, er
 	return &Client{
 		inner:       client,
 		addressBook: books[0].Path,
+		bookCount:   len(books),
 	}, nil
 }
 
