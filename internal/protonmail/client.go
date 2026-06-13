@@ -48,6 +48,11 @@ var (
 	// ErrSessionExpired is returned when a stored session can no longer be
 	// resumed (revoked or expired refresh token); the user must re-run init.
 	ErrSessionExpired = errors.New("proton session expired: re-run 'proton-carddav-sync init'")
+	// ErrHumanVerification is returned when Proton demands a CAPTCHA (API code
+	// 9001) at the login step — this is a server-side anti-abuse decision, not a
+	// credential problem. See the README Troubleshooting section.
+	ErrHumanVerification = errors.New("proton requires human verification (CAPTCHA) at login; " +
+		"this is Proton anti-abuse, not a wrong password (see the README Troubleshooting section)")
 )
 
 // Session is the durable, password-free Proton session persisted between runs.
@@ -98,6 +103,10 @@ func NewClient(appVersion string) *Client {
 func (c *Client) LoginWithPassword(ctx context.Context, username, password string, totp func() (string, error)) (Session, error) {
 	client, auth, err := c.manager.NewClientWithLogin(ctx, username, []byte(password))
 	if err != nil {
+		var apiErr *proton.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == proton.HumanVerificationRequired {
+			return Session{}, fmt.Errorf("%w: %w", ErrHumanVerification, err)
+		}
 		return Session{}, fmt.Errorf("proton login for %q: %w", username, err)
 	}
 	c.client = client
