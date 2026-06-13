@@ -15,6 +15,7 @@ import (
 	"github.com/secbyd/proton-carddav-sync/internal/carddav"
 	dbpkg "github.com/secbyd/proton-carddav-sync/internal/db"
 	"github.com/secbyd/proton-carddav-sync/internal/protonmail"
+	"github.com/secbyd/proton-carddav-sync/internal/vcardsync"
 )
 
 // Direction controls which way contacts are synchronised.
@@ -73,6 +74,13 @@ func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
 		return fmt.Errorf("list proton contacts: %w", err)
 	}
 
+	// Index existing CardDAV vCards by UID so we can overlay Proton's fields
+	// onto them, preserving CardDAV-only properties Proton does not model.
+	existing, err := s.cardDAVByUID(ctx)
+	if err != nil {
+		return err
+	}
+
 	for _, c := range contacts {
 		select {
 		case <-ctx.Done():
@@ -80,16 +88,34 @@ func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
 		default:
 		}
 
-		vcardStr, vcErr := s.proton.GetContactVCard(ctx, c.ID)
+		protonVCard, vcErr := s.proton.GetContactVCard(ctx, c.ID)
 		if vcErr != nil {
 			s.log.Warn("skip proton contact: get vcard failed",
 				"contact_id", c.ID, "err", vcErr)
 			continue
 		}
 
-		uid := extractUID(vcardStr, c.ID)
+		uid := extractUID(protonVCard, c.ID)
 
-		if putErr := s.carddav.PutContact(ctx, uid, vcardStr); putErr != nil {
+		// For an existing CardDAV contact, overlay Proton's fields onto the
+		// CardDAV card so CardDAV-only fields survive. For a brand-new contact,
+		// write Proton's card as-is.
+		finalVCard := protonVCard
+		if existingVCard, ok := existing[uid]; ok {
+			merged, mergeErr := vcardsync.OverlayString(existingVCard, protonVCard)
+			if mergeErr != nil {
+				s.log.Warn("skip proton contact: merge failed", "uid", uid, "err", mergeErr)
+				continue
+			}
+			// Nothing changed on the CardDAV side — skip the write (and the REV
+			// bump) entirely.
+			if hashString(merged) == hashString(existingVCard) {
+				continue
+			}
+			finalVCard = merged
+		}
+
+		if putErr := s.carddav.PutContact(ctx, uid, finalVCard); putErr != nil {
 			return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
 		}
 
@@ -97,12 +123,34 @@ func (s *Syncer) syncProtonToCardDAV(ctx context.Context) error {
 
 		if upsertErr := dbpkg.UpsertContact(ctx, s.db, dbpkg.ContactRecord{
 			UID:       uid,
-			VCardHash: hashString(vcardStr),
+			VCardHash: hashString(finalVCard),
 		}); upsertErr != nil {
 			return fmt.Errorf("upsert local contact %q: %w", uid, upsertErr)
 		}
 	}
 	return nil
+}
+
+// cardDAVByUID lists CardDAV contacts and returns their encoded vCards keyed by
+// UID, for overlay merging in the Proton→CardDAV direction.
+func (s *Syncer) cardDAVByUID(ctx context.Context) (map[string]string, error) {
+	objects, err := s.carddav.ListContacts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list carddav contacts: %w", err)
+	}
+
+	out := make(map[string]string, len(objects))
+	for _, obj := range objects {
+		var buf bytes.Buffer
+		if encErr := vcard.NewEncoder(&buf).Encode(obj.Card); encErr != nil {
+			s.log.Warn("skip carddav contact in index: encode failed",
+				"path", obj.Path, "err", encErr)
+			continue
+		}
+		str := buf.String()
+		out[extractUID(str, obj.Path)] = str
+	}
+	return out, nil
 }
 
 func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {

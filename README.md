@@ -79,6 +79,28 @@ edit it by hand). No secrets are stored in this file.
 | `PCS_PROTON_APP_VERSION` | no | Overrides `proton.app_version` at runtime, for tracking Proton's accepted client versions without editing the config. |
 | `PCS_PROTON_USER_AGENT` | no | Overrides the browser `User-Agent` sent to Proton. Defaults to a recent Firefox UA; set it to your browser's exact value if you still hit CAPTCHA. |
 
+## Sync behaviour
+
+Proton models far fewer vCard properties than a typical CardDAV server. To avoid
+losing data, the **Proton → CardDAV** direction does a **field-level overlay**
+rather than a whole-record overwrite: it loads the existing CardDAV contact and
+applies only the properties Proton carries on top of it. So if you change a
+phone number in Proton, that number updates in CardDAV while CardDAV-only
+properties (notes, extra fields, `X-` extensions, …) are preserved. The
+**CardDAV → Proton** direction sends the full CardDAV card (Proton stores what it
+can model).
+
+Limitations of the overlay (no base snapshot is kept, so there is no true
+three-way merge yet):
+
+- **Deletions on the Proton side do not propagate.** Removing a property in
+  Proton leaves it intact in CardDAV (the overlay can't tell "deleted" from
+  "never modelled").
+- For a property Proton *does* model (e.g. `TEL`, `EMAIL`), Proton's values
+  replace CardDAV's for that property. Whole CardDAV-only properties are always
+  kept; individual values dropped *within* a Proton-modelled property are not
+  recoverable without a full three-way merge.
+
 ## Troubleshooting
 
 ### Login fails with a CAPTCHA / "human verification" / "unusual activity" error
