@@ -5,70 +5,72 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/viper"
 )
 
-// Config is the top-level application configuration.
+// Config holds all runtime configuration.
 type Config struct {
-	Proton  ProtonConfig  `mapstructure:"proton"`
-	CardDAV CardDAVConfig `mapstructure:"carddav"`
-	Sync    SyncConfig    `mapstructure:"sync"`
-	Log     LogConfig     `mapstructure:"log"`
+	Proton struct {
+		Username string `mapstructure:"username"`
+		TOTP     string `mapstructure:"totp"`
+	} `mapstructure:"proton"`
+
+	CardDAV struct {
+		URL      string `mapstructure:"url"`
+		Username string `mapstructure:"username"`
+		Password string `mapstructure:"password"`
+	} `mapstructure:"carddav"`
+
+	Sync struct {
+		Direction     string `mapstructure:"direction"`
+		MergeStrategy string `mapstructure:"merge_strategy"`
+		Interval      string `mapstructure:"interval"`
+	} `mapstructure:"sync"`
+
+	DB struct {
+		Path string `mapstructure:"path"`
+	} `mapstructure:"db"`
+
+	Log struct {
+		Level  string `mapstructure:"level"`
+		Format string `mapstructure:"format"`
+	} `mapstructure:"log"`
 }
 
-// ProtonConfig holds ProtonMail credentials.
-type ProtonConfig struct {
-	Username   string `mapstructure:"username"`
-	Password   string `mapstructure:"password"`
-	TOTPSecret string `mapstructure:"totp_secret"`
-}
-
-// CardDAVConfig holds CardDAV server settings.
-type CardDAVConfig struct {
-	URL      string `mapstructure:"url"`
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
-}
-
-// SyncConfig controls sync behaviour.
-type SyncConfig struct {
-	Interval  time.Duration `mapstructure:"interval"`
-	Direction string        `mapstructure:"direction"`
-	DBPath    string        `mapstructure:"db_path"`
-}
-
-// LogConfig controls logging.
-type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
-}
-
-// Load reads and validates the configuration.
+// Load reads configuration from viper and applies defaults.
 func Load() (*Config, error) {
-	viper.SetDefault("sync.interval", "1h")
-	viper.SetDefault("sync.direction", "both")
-	viper.SetDefault("sync.db_path", expandHome("~/.proton-carddav-sync/state.db"))
-	viper.SetDefault("log.level", "info")
-	viper.SetDefault("log.format", "text")
+	setDefaults()
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
-	// Expand ~ in db_path
-	cfg.Sync.DBPath = expandHome(cfg.Sync.DBPath)
-	if err := os.MkdirAll(filepath.Dir(cfg.Sync.DBPath), 0o700); err != nil {
-		return nil, fmt.Errorf("creating db directory: %w", err)
+
+	cfg.DB.Path = expandPath(cfg.DB.Path)
+
+	// Ensure DB directory exists.
+	if err := os.MkdirAll(filepath.Dir(cfg.DB.Path), 0o700); err != nil {
+		return nil, fmt.Errorf("create db dir: %w", err)
 	}
+
 	return &cfg, nil
 }
 
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
+func setDefaults() {
+	home, _ := os.UserHomeDir()
+	viper.SetDefault("sync.direction", "both")
+	viper.SetDefault("sync.merge_strategy", "prefer-newer")
+	viper.SetDefault("sync.interval", "15m")
+	viper.SetDefault("db.path", filepath.Join(home, ".local", "share", "proton-carddav-sync", "sync.db"))
+	viper.SetDefault("log.level", "info")
+	viper.SetDefault("log.format", "text")
+}
+
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") {
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[2:])
+		return filepath.Join(home, p[2:])
 	}
-	return path
+	return p
 }

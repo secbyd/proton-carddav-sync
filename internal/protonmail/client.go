@@ -1,4 +1,3 @@
-// Package protonmail wraps the go-proton-api client.
 package protonmail
 
 import (
@@ -6,33 +5,63 @@ import (
 	"fmt"
 
 	proton "github.com/ProtonMail/go-proton-api"
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
 
-// Client wraps the ProtonMail API manager and active session.
+// Client wraps a go-proton-api client together with the user keyring.
 type Client struct {
-	manager *proton.Manager
-	client  *proton.Client
-	ctx     context.Context
+	mgr    *proton.Manager
+	client *proton.Client
+	kr     *crypto.KeyRing
 }
 
-// New creates a new authenticated ProtonMail client.
-func New(ctx context.Context, username, password string) (*Client, error) {
+// NewClient creates a Proton Manager, authenticates, and returns a ready Client.
+func NewClient(ctx context.Context, username, password string) (*Client, error) {
 	mgr := proton.New(
-		proton.WithHostURL(proton.DefaultHostURL),
+		proton.WithHostURL("https://mail-api.proton.me"),
 	)
 
-	client, _, err := mgr.NewClientWithLogin(ctx, username, []byte(password))
+	client, auth, err := mgr.NewClientWithLogin(ctx, username, []byte(password))
 	if err != nil {
-		return nil, fmt.Errorf("protonmail login: %w", err)
+		return nil, fmt.Errorf("proton login: %w", err)
 	}
-	return &Client{manager: mgr, client: client, ctx: ctx}, nil
+	_ = auth // auth holds session info; the client manages re-auth internally
+
+	// Unlock the user key to obtain the keyring for contact card decryption.
+	salts, err := client.GetKeySalts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get key salts: %w", err)
+	}
+
+	user, err := client.GetUser(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+
+	kr, err := user.Keys.Unlock(salts, []byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("unlock user keyring: %w", err)
+	}
+
+	return &Client{
+		mgr:    mgr,
+		client: client,
+		kr:     kr,
+	}, nil
 }
 
-// Close logs out and frees the session.
-func (c *Client) Close() error {
-	if err := c.client.AuthDelete(c.ctx); err != nil {
-		return fmt.Errorf("protonmail logout: %w", err)
-	}
-	c.manager.Close()
-	return nil
+// Close logs out and cleans up.
+func (c *Client) Close() {
+	_ = c.client.AuthDelete(context.Background())
+	c.mgr.Close()
+}
+
+// KeyRing exposes the user keyring (needed for contact card encoding/decoding).
+func (c *Client) KeyRing() *crypto.KeyRing {
+	return c.kr
+}
+
+// Underlying returns the raw go-proton-api client.
+func (c *Client) Underlying() *proton.Client {
+	return c.client
 }

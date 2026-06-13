@@ -1,94 +1,105 @@
 # proton-carddav-sync
 
-A daemon that keeps your **ProtonMail contacts** in sync with any **CardDAV** address book.
-
----
+A lightweight Go daemon that keeps your **Proton Mail contacts** in sync with any **CardDAV** server (Nextcloud, Radicale, Baikal, iCloud, …).
 
 ## Features
 
-- Bidirectional sync (ProtonMail ↔ CardDAV)
-- Incremental, state-tracked syncs via SQLite
-- End-to-end encrypted credential storage
-- vCard merge with conflict resolution
-- Configurable sync interval and direction
-- Structured logging (text or JSON)
+- Bidirectional sync (Proton ↔ CardDAV, or one-way)
+- Three-way vCard merge with configurable conflict resolution
+- AES-256-GCM encrypted credential storage (never stores passwords in plain text)
+- SQLite state database for efficient incremental syncing
+- Structured logging (text or JSON via zap)
+- Systemd-friendly daemon mode with graceful shutdown
 
----
+## Requirements
 
-## Installation
-
-```bash
-git clone https://github.com/secbyd/proton-carddav-sync
-cd proton-carddav-sync
-go build -o proton-carddav-sync ./cmd/proton-carddav-sync
-```
-
-> **Requires Go 1.22+**
-
----
+- Go 1.21+
+- gcc (for cgo, required by `mattn/go-sqlite3`)
 
 ## Quick Start
 
 ```bash
-# 1. Copy and edit the example config
-cp config.yaml.example config.yaml
-$EDITOR config.yaml
+# 1. Clone
+git clone https://github.com/secbyd/proton-carddav-sync
+cd proton-carddav-sync
 
-# 2. Initialise the database (stores credentials encrypted at rest)
-proton-carddav-sync init
+# 2. Copy and edit config
+mkdir -p ~/.config/proton-carddav-sync
+cp config.yaml.example ~/.config/proton-carddav-sync/config.yaml
+$EDITOR ~/.config/proton-carddav-sync/config.yaml
 
-# 3. Run a one-shot sync
-proton-carddav-sync sync
+# 3. Build
+go build -o proton-carddav-sync ./cmd/proton-carddav-sync
 
-# 4. Start the background daemon
-proton-carddav-sync run
+# 4. Store encrypted credentials
+./proton-carddav-sync init
+
+# 5. One-shot sync (test)
+PROTON_PASSWORD=yourpassword ./proton-carddav-sync sync
+
+# 6. Start daemon
+PROTON_PASSWORD=yourpassword ./proton-carddav-sync run
 ```
-
----
 
 ## Configuration
 
-See [`config.yaml.example`](config.yaml.example) for all available options.
+All settings live in `~/.config/proton-carddav-sync/config.yaml`.
+See [`config.yaml.example`](config.yaml.example) for an annotated reference.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `proton.username` | — | ProtonMail login |
-| `carddav.url` | — | CardDAV address-book URL |
-| `sync.interval` | `1h` | How often the daemon syncs |
-| `sync.direction` | `both` | Sync direction |
-| `sync.db_path` | `~/.proton-carddav-sync/state.db` | SQLite state file |
-| `log.level` | `info` | Logging verbosity |
+| `proton.username` | — | Proton Mail email address |
+| `carddav.url` | — | Full CardDAV collection URL |
+| `carddav.username` | — | CardDAV username |
+| `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
+| `sync.merge_strategy` | `prefer-newer` | `prefer-newer` / `prefer-proton` / `prefer-carddav` |
+| `sync.interval` | `15m` | Daemon sync interval (Go duration string) |
+| `db.path` | `~/.local/share/…/sync.db` | SQLite state database path |
+| `log.level` | `info` | `debug` / `info` / `warn` / `error` |
+| `log.format` | `text` | `text` / `json` |
 
----
+## Systemd Unit
+
+```ini
+[Unit]
+Description=Proton CardDAV Sync Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/proton-carddav-sync/secrets.env
+ExecStart=%h/bin/proton-carddav-sync run
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target
+```
+
+Create `~/.config/proton-carddav-sync/secrets.env`:
+```
+PROTON_PASSWORD=your_proton_password
+```
+Chmod it `600`.
 
 ## Architecture
 
 ```
-cmd/proton-carddav-sync/
-  main.go                 ← entry point
+cmd/
+  proton-carddav-sync/main.go   ← binary entry point
 internal/
-  cli/                    ← Cobra commands (root, init, sync, run)
-  config/                 ← Viper config loader
-  crypto/                 ← AES-GCM credential encryption
-  db/                     ← SQLite state + contact store
-  log/                    ← Zap logger initialisation
-  protonmail/             ← ProtonMail API client + contacts
-  carddav/                ← CardDAV client
-  vcardsync/              ← vCard merge / conflict resolution
-  syncer/                 ← Orchestrates a full sync cycle
+  cli/                          ← cobra commands (init, sync, run)
+  config/                       ← viper config loader
+  crypto/                       ← AES-256-GCM + PBKDF2
+  db/                           ← SQLite state (credentials + contacts)
+  log/                          ← zap logger
+  protonmail/                   ← go-proton-api wrapper
+  carddav/                      ← go-webdav CardDAV wrapper
+  vcardsync/                    ← three-way vCard merge
+  syncer/                       ← orchestration + crypto shim
 ```
-
----
-
-## Acknowledgements
-
-- [go-proton-api](https://github.com/ProtonMail/go-proton-api)
-- [go-webdav](https://github.com/emersion/go-webdav)
-- [go-vcard](https://github.com/emersion/go-vcard)
-- [hydroxide](https://github.com/emersion/hydroxide) (inspiration)
-
----
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE).

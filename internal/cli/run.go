@@ -17,56 +17,71 @@ import (
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Start the background sync daemon",
-	RunE:  runDaemon,
+	Short: "Start the continuous sync daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemon()
+	},
 }
 
-func init() {
-	rootCmd.AddCommand(runCmd)
-}
-
-func runDaemon(_ *cobra.Command, _ []string) error {
+func runDaemon() error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return fmt.Errorf("load config: %w", err)
 	}
+
 	logger, err := log.New(cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
-		return err
+		return fmt.Errorf("init logger: %w", err)
 	}
+	defer logger.Sync() //nolint:errcheck
 
-	database, err := db.Open(cfg.Sync.DBPath)
+	sqlDB, err := db.Open(cfg.DB.Path)
 	if err != nil {
-		return fmt.Errorf("opening db: %w", err)
+		return fmt.Errorf("open db: %w", err)
 	}
-	defer database.Close()
+	defer sqlDB.Close()
 
-	s, err := syncer.New(cfg, database, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s, err := syncer.New(ctx, cfg, sqlDB, logger)
 	if err != nil {
-		return fmt.Errorf("creating syncer: %w", err)
+		return fmt.Errorf("create syncer: %w", err)
+	}
+	defer s.Close()
+
+	interval, err := time.ParseDuration(cfg.Sync.Interval)
+	if err != nil {
+		return fmt.Errorf("parse sync interval %q: %w", cfg.Sync.Interval, err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	logger.Infof("Daemon started; sync every %s", interval)
 
-	logger.Infof("Daemon started; sync interval %s", cfg.Sync.Interval)
+	// Run immediately on start.
+	if err := s.Sync(ctx); err != nil {
+		logger.Warnf("Initial sync error: %v", err)
+	}
 
-	ticker := time.NewTicker(cfg.Sync.Interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Run immediately on startup.
-	if err := s.Sync(); err != nil {
-		logger.Errorf("Initial sync error: %v", err)
-	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	for {
 		select {
 		case <-ticker.C:
-			if err := s.Sync(); err != nil {
-				logger.Errorf("Sync error: %v", err)
+			logger.Info("Starting scheduled sync")
+			if err := s.Sync(ctx); err != nil {
+				logger.Warnf("Sync error: %v", err)
+			} else {
+				logger.Info("Sync completed")
 			}
+		case sig := <-sigCh:
+			logger.Infof("Received signal %s, shutting down", sig)
+			cancel()
+			return nil
 		case <-ctx.Done():
-			logger.Info("Daemon shutting down")
 			return nil
 		}
 	}

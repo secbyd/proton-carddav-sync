@@ -1,30 +1,35 @@
-# proton-carddav-sync configuration example
-# Copy to config.yaml and fill in your values.
+# proton-carddav-sync configuration
+# Copy to ~/.config/proton-carddav-sync/config.yaml and edit.
 
 proton:
-  # Your ProtonMail account credentials
+  # Proton Mail username (email address)
   username: "user@proton.me"
-  # Password is stored encrypted in the database after `init`.
-  # Do NOT put your plaintext password here in production.
-  password: ""
-  # Optional: 2FA TOTP secret (base32-encoded)
-  totp_secret: ""
+  # For TOTP 2FA: leave empty if not used
+  totp: ""
 
 carddav:
-  # Full URL of your CardDAV server / address book
-  url: "https://dav.example.com/addressbooks/user/default/"
-  username: "dav-user"
-  # Password stored encrypted in DB after `init`.
+  # Full CardDAV collection URL
+  # e.g. https://nextcloud.example.com/remote.php/dav/addressbooks/users/alice/contacts/
+  url: "https://dav.example.com/addressbooks/user/contacts/"
+  username: "alice"
+  # password stored encrypted in the DB after `init`; plain text here
+  # is only read by `init` to bootstrap – remove after first run.
   password: ""
 
 sync:
-  # How often to run a full sync (e.g. 5m, 1h, 24h)
-  interval: "1h"
   # Direction: both | proton-to-carddav | carddav-to-proton
   direction: "both"
-  # Path to the SQLite database file
-  db_path: "~/.proton-carddav-sync/state.db"
+  # Merge strategy: prefer-proton | prefer-carddav | prefer-newer
+  merge_strategy: "prefer-newer"
+  # How often to sync in daemon mode (Go duration string)
+  interval: "15m"
+
+db:
+  # Path to the SQLite database file; ~ is expanded
+  path: "~/.local/share/proton-carddav-sync/sync.db"
 
 log:
-  level: "info"   # debug | info | warn | error
-  format: "text"  # text | json
+  # Level: debug | info | warn | error
+  level: "info"
+  # Format: text | json
+  format: "text"

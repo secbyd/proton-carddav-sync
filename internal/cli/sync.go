@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/secbyd/proton-carddav-sync/internal/config"
@@ -12,38 +13,40 @@ import (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Run a one-shot sync between ProtonMail and CardDAV",
-	RunE:  runSync,
+	Short: "Run a single synchronisation pass and exit",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSync()
+	},
 }
 
-func init() {
-	rootCmd.AddCommand(syncCmd)
-}
-
-func runSync(_ *cobra.Command, _ []string) error {
+func runSync() error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return fmt.Errorf("load config: %w", err)
 	}
+
 	logger, err := log.New(cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
-		return err
+		return fmt.Errorf("init logger: %w", err)
 	}
+	defer logger.Sync() //nolint:errcheck
 
-	database, err := db.Open(cfg.Sync.DBPath)
+	sqlDB, err := db.Open(cfg.DB.Path)
 	if err != nil {
-		return fmt.Errorf("opening db: %w", err)
+		return fmt.Errorf("open db: %w", err)
 	}
-	defer database.Close()
+	defer sqlDB.Close()
 
-	s, err := syncer.New(cfg, database, logger)
+	s, err := syncer.New(context.Background(), cfg, sqlDB, logger)
 	if err != nil {
-		return fmt.Errorf("creating syncer: %w", err)
+		return fmt.Errorf("create syncer: %w", err)
+	}
+	defer s.Close()
+
+	if err := s.Sync(context.Background()); err != nil {
+		return fmt.Errorf("sync: %w", err)
 	}
 
-	if err := s.Sync(); err != nil {
-		return fmt.Errorf("sync failed: %w", err)
-	}
-	logger.Info("Sync complete")
+	logger.Info("Sync completed successfully.")
 	return nil
 }

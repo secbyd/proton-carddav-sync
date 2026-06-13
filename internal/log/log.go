@@ -1,4 +1,3 @@
-// Package log provides a thin wrapper around go.uber.org/zap.
 package log
 
 import (
@@ -9,29 +8,37 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// Logger is an alias for the sugared Zap logger.
-type Logger = *zap.SugaredLogger
-
-// New constructs a Logger from level ("debug"|"info"|"warn"|"error") and
-// format ("text"|"json").
-func New(level, format string) (Logger, error) {
+// New creates a zap sugared logger configured with the given level and format.
+// level: debug | info | warn | error
+// format: text | json
+func New(level, format string) (*zap.SugaredLogger, error) {
 	var zapLevel zapcore.Level
-	if err := zapLevel.UnmarshalText([]byte(strings.ToLower(level))); err != nil {
-		return nil, fmt.Errorf("invalid log level %q: %w", level, err)
+	switch strings.ToLower(level) {
+	case "debug":
+		zapLevel = zapcore.DebugLevel
+	case "info", "":
+		zapLevel = zapcore.InfoLevel
+	case "warn", "warning":
+		zapLevel = zapcore.WarnLevel
+	case "error":
+		zapLevel = zapcore.ErrorLevel
+	default:
+		return nil, fmt.Errorf("unknown log level %q", level)
 	}
 
 	var cfg zap.Config
-	if strings.ToLower(format) == "json" {
+	switch strings.ToLower(format) {
+	case "json":
 		cfg = zap.NewProductionConfig()
-	} else {
+	default:
 		cfg = zap.NewDevelopmentConfig()
 		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	}
 	cfg.Level = zap.NewAtomicLevelAt(zapLevel)
 
-	base, err := cfg.Build()
+	logger, err := cfg.Build()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build logger: %w", err)
 	}
-	return base.Sugar(), nil
+	return logger.Sugar(), nil
 }

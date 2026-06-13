@@ -1,65 +1,97 @@
 package db
 
-import "time"
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+)
 
-// ContactRecord represents a synced contact entry in the DB.
+// ContactRecord is the persisted state of a synced contact.
 type ContactRecord struct {
-	UID          string
-	ProtonID     string
-	CardDAVHref  string
-	ProtonEtag   string
-	CardDAVEtag  string
-	VCard        string
-	LastSyncedAt time.Time
+	UID         string
+	ProtonID    string
+	CardDAVHref string
+	ProtonETag  string
+	CardDAVETag string
+	VCardData   string
+	UpdatedAt   int64
 }
 
-// UpsertContact inserts or updates a contact record.
-func (d *DB) UpsertContact(r *ContactRecord) error {
-	_, err := d.Exec(`
-		INSERT INTO contacts (uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard, last_synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+// UpsertContact creates or updates a contact record.
+func UpsertContact(ctx context.Context, db *sql.DB, r *ContactRecord) error {
+	r.UpdatedAt = time.Now().Unix()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO contacts (uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard_data, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uid) DO UPDATE SET
-			proton_id     = excluded.proton_id,
-			carddav_href  = excluded.carddav_href,
-			proton_etag   = excluded.proton_etag,
-			carddav_etag  = excluded.carddav_etag,
-			vcard         = excluded.vcard,
-			last_synced_at = CURRENT_TIMESTAMP`,
-		r.UID, r.ProtonID, r.CardDAVHref, r.ProtonEtag, r.CardDAVEtag, r.VCard)
+			proton_id    = excluded.proton_id,
+			carddav_href = excluded.carddav_href,
+			proton_etag  = excluded.proton_etag,
+			carddav_etag = excluded.carddav_etag,
+			vcard_data   = excluded.vcard_data,
+			updated_at   = excluded.updated_at`,
+		r.UID, r.ProtonID, r.CardDAVHref, r.ProtonETag, r.CardDAVETag, r.VCardData, r.UpdatedAt)
 	return err
 }
 
-// GetContactByUID returns a contact record by UID.
-func (d *DB) GetContactByUID(uid string) (*ContactRecord, error) {
-	row := d.QueryRow(`
-		SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard, last_synced_at
-		FROM contacts WHERE uid = ?`, uid)
-	r := &ContactRecord{}
-	return r, row.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonEtag, &r.CardDAVEtag, &r.VCard, &r.LastSyncedAt)
+// GetContact retrieves a contact record by UID.
+func GetContact(ctx context.Context, db *sql.DB, uid string) (*ContactRecord, error) {
+	row := db.QueryRowContext(ctx, `SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard_data, updated_at FROM contacts WHERE uid=?`, uid)
+	var r ContactRecord
+	if err := row.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonETag, &r.CardDAVETag, &r.VCardData, &r.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("get contact %q: %w", uid, err)
+	}
+	return &r, nil
 }
 
-// AllContacts returns all contact records.
-func (d *DB) AllContacts() ([]*ContactRecord, error) {
-	rows, err := d.Query(`
-		SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard, last_synced_at
-		FROM contacts ORDER BY uid`)
+// ListContacts returns all stored contact records.
+func ListContacts(ctx context.Context, db *sql.DB) ([]*ContactRecord, error) {
+	rows, err := db.QueryContext(ctx, `SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard_data, updated_at FROM contacts`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var records []*ContactRecord
 	for rows.Next() {
-		r := &ContactRecord{}
-		if err := rows.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonEtag, &r.CardDAVEtag, &r.VCard, &r.LastSyncedAt); err != nil {
+		var r ContactRecord
+		if err := rows.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonETag, &r.CardDAVETag, &r.VCardData, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
-		records = append(records, r)
+		records = append(records, &r)
 	}
 	return records, rows.Err()
 }
 
-// DeleteContact removes a contact by UID.
-func (d *DB) DeleteContact(uid string) error {
-	_, err := d.Exec(`DELETE FROM contacts WHERE uid = ?`, uid)
+// DeleteContact removes a contact record by UID.
+func DeleteContact(ctx context.Context, db *sql.DB, uid string) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM contacts WHERE uid=?`, uid)
 	return err
+}
+
+// GetContactByProtonID looks up a record by its Proton contact ID.
+func GetContactByProtonID(ctx context.Context, db *sql.DB, protonID string) (*ContactRecord, error) {
+	row := db.QueryRowContext(ctx, `SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard_data, updated_at FROM contacts WHERE proton_id=?`, protonID)
+	var r ContactRecord
+	if err := row.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonETag, &r.CardDAVETag, &r.VCardData, &r.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get contact by proton id %q: %w", protonID, err)
+	}
+	return &r, nil
+}
+
+// GetContactByCardDAVHref looks up a record by its CardDAV href.
+func GetContactByCardDAVHref(ctx context.Context, db *sql.DB, href string) (*ContactRecord, error) {
+	row := db.QueryRowContext(ctx, `SELECT uid, proton_id, carddav_href, proton_etag, carddav_etag, vcard_data, updated_at FROM contacts WHERE carddav_href=?`, href)
+	var r ContactRecord
+	if err := row.Scan(&r.UID, &r.ProtonID, &r.CardDAVHref, &r.ProtonETag, &r.CardDAVETag, &r.VCardData, &r.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get contact by carddav href %q: %w", href, err)
+	}
+	return &r, nil
 }

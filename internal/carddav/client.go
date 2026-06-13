@@ -1,85 +1,101 @@
-// Package carddav wraps go-webdav's CardDAV client.
 package carddav
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/emersion/go-vcard"
 	"github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/carddav"
 )
 
-// Client wraps the CardDAV address book client.
+// Client wraps go-webdav's CardDAV client.
 type Client struct {
-	dav         *carddav.Client
-	addressBook string
+	client      *carddav.Client
+	collURL     string
 }
 
-// New creates an authenticated CardDAV client for the given address book URL.
-func New(url, username, password string) (*Client, error) {
-	httpClient := &http.Client{
-		Transport: &webdav.HTTPClientTransport{
-			InsecureSkipVerify: false,
-		},
-	}
-	_ = httpClient // used below via BasicAuth
-
-	davClient, err := carddav.NewClient(
-		webdav.HTTPClientWithBasicAuth(http.DefaultClient, username, password),
-		url,
-	)
+// New creates an authenticated CardDAV client.
+func New(serverURL, username, password string) (*Client, error) {
+	httpClient := webdav.HTTPClientWithBasicAuth(http.DefaultClient, username, password)
+	c, err := carddav.NewClient(httpClient, serverURL)
 	if err != nil {
-		return nil, fmt.Errorf("carddav new client: %w", err)
+		return nil, fmt.Errorf("new carddav client: %w", err)
 	}
-	return &Client{dav: davClient, addressBook: url}, nil
+	return &Client{client: c, collURL: serverURL}, nil
 }
 
-// Contact holds a vCard fetched from CardDAV.
-type Contact struct {
-	Href string
-	Etag string
-	Card *vcard.Card
+// ContactEntry is a CardDAV contact with its href, etag, and vCard data.
+type ContactEntry struct {
+	Href  string
+	ETag  string
+	VCard string
 }
 
-// ListContacts returns all contacts in the address book.
-func (c *Client) ListContacts(ctx context.Context) ([]Contact, error) {
-	objs, err := c.dav.QueryAddressBook(ctx, c.addressBook, &carddav.AddressBookQuery{
-		PropFilters: []carddav.PropFilter{{Name: "FN"}},
-	})
+// ListAll fetches all contacts from the CardDAV collection.
+func (c *Client) ListAll(ctx context.Context) ([]*ContactEntry, error) {
+	query := &carddav.AddressBookQuery{
+		PropFilters: []carddav.PropFilter{},
+	}
+
+	objects, err := c.client.QueryAddressBook(ctx, c.collURL, query)
 	if err != nil {
 		return nil, fmt.Errorf("carddav query: %w", err)
 	}
-	contacts := make([]Contact, 0, len(objs))
-	for _, obj := range objs {
-		contacts = append(contacts, Contact{
-			Href: obj.Path,
-			Etag: obj.ETag,
-			Card: &obj.Card,
+
+	entries := make([]*ContactEntry, 0, len(objects))
+	for _, obj := range objects {
+		var buf bytes.Buffer
+		for _, card := range obj.Data {
+			if err := vcard.NewEncoder(&buf).Encode(card); err != nil {
+				return nil, fmt.Errorf("encode vcard: %w", err)
+			}
+		}
+		entries = append(entries, &ContactEntry{
+			Href:  obj.Path,
+			ETag:  obj.ETag,
+			VCard: buf.String(),
 		})
 	}
-	return contacts, nil
+	return entries, nil
 }
 
-// PutContact creates or updates a contact at the given href.
-func (c *Client) PutContact(ctx context.Context, href string, card *vcard.Card, etag string) (string, error) {
-	obj := &carddav.AddressObject{
-		Path: href,
-		ETag: etag,
-		Card: *card,
-	}
-	newEtag, err := c.dav.PutAddressObject(ctx, c.addressBook, obj)
+// Put creates or updates a contact at the given href (relative to collection).
+// If href is empty a new path is derived from the UID.
+func (c *Client) Put(ctx context.Context, href, vcardData string) (string, error) {
+	card, err := vcard.NewDecoder(strings.NewReader(vcardData)).Decode()
 	if err != nil {
-		return "", fmt.Errorf("carddav put: %w", err)
+		return "", fmt.Errorf("parse vcard: %w", err)
 	}
-	return newEtag, nil
+
+	if href == "" {
+		uid := card.Get(vcard.FieldUID)
+		if uid == nil || uid.Value == "" {
+			return "", fmt.Errorf("vcard missing UID")
+		}
+		href = path.Join(c.collURL, uid.Value+".vcf")
+	}
+
+	addr := &carddav.AddressObject{
+		Path: href,
+		Data: []vcard.Card{card},
+	}
+
+	etag, err := c.client.PutAddressObject(ctx, href, addr)
+	if err != nil {
+		return "", fmt.Errorf("put carddav object at %q: %w", href, err)
+	}
+	return etag, nil
 }
 
-// DeleteContact removes the contact at href.
-func (c *Client) DeleteContact(ctx context.Context, href string) error {
-	if err := c.dav.RemoveAddressObject(ctx, href); err != nil {
-		return fmt.Errorf("carddav delete %s: %w", href, err)
+// Delete removes a contact by its href.
+func (c *Client) Delete(ctx context.Context, href string) error {
+	if err := c.client.DeleteAddressObject(ctx, href); err != nil {
+		return fmt.Errorf("delete carddav object %q: %w", href, err)
 	}
 	return nil
 }
