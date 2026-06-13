@@ -9,20 +9,6 @@ on:
 permissions:
   contents: read
 
-# Reusable step for patching go-proton-api@v0.4.0 in the module cache.
-# go-proton-api v0.4.0 uses golang.org/x/exp/slices with the old bool-returning
-# SortFunc signature which does not compile under Go 1.21+. We rewrite the two
-# affected lines in-place with sed, which is context-free and always idempotent.
-x-patch-proton: &patch-proton |
-  MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
-  chmod -R u+w "$MOD"
-  FILE="$MOD/address.go"
-  # 1. Swap golang.org/x/exp/slices for stdlib slices + cmp
-  sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
-  # 2. Change SortFunc callback signature from bool to int
-  sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
-  sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
-
 jobs:
   # ──────────────────────────────────────────────
   # 1. Lint — go mod tidy check + go vet + golangci-lint
@@ -46,7 +32,13 @@ jobs:
         run: go mod download
 
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: *patch-proton
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          FILE="$MOD/address.go"
+          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
+          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
+          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
 
       - name: Verify go.mod is tidy
         run: |
@@ -85,7 +77,13 @@ jobs:
         run: go mod download
 
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: *patch-proton
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          FILE="$MOD/address.go"
+          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
+          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
+          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
 
       - name: Run tests
         run: go test -v -race -count=1 ./...
@@ -127,7 +125,13 @@ jobs:
         run: go mod download
 
       - name: Patch go-proton-api address.go (slices.SortFunc Go 1.21 compat)
-        run: *patch-proton
+        run: |
+          MOD=$(go env GOMODCACHE)/github.com/\!proton\!mail/go-proton-api@v0.4.0
+          chmod -R u+w "$MOD"
+          FILE="$MOD/address.go"
+          sed -i 's|"golang.org/x/exp/slices"|"cmp"\n\t"slices"|' "$FILE"
+          sed -i 's/func(a, b Address) bool {/func(a, b Address) int {/' "$FILE"
+          sed -i 's/return a\.Order < b\.Order/return cmp.Compare(a.Order, b.Order)/' "$FILE"
 
       - name: Build binary
         env:
