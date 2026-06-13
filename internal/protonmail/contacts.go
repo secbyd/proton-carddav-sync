@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	proton "github.com/ProtonMail/go-proton-api"
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	govcard "github.com/emersion/go-vcard"
 )
 
@@ -90,11 +92,13 @@ func (c *Client) CreateContact(ctx context.Context, vcard string) (string, error
 		return "", err
 	}
 
-	// proton.Cards is []*proton.Card; proton.CardTypeClear is the unencrypted type.
+	cards, err := c.buildCards(vcard)
+	if err != nil {
+		return "", err
+	}
+
 	req := proton.CreateContactsReq{
-		Contacts: []proton.ContactCards{
-			{Cards: proton.Cards{&proton.Card{Type: proton.CardTypeClear, Data: vcard}}},
-		},
+		Contacts: []proton.ContactCards{{Cards: cards}},
 	}
 
 	resps, err := raw.CreateContacts(ctx, req)
@@ -104,7 +108,12 @@ func (c *Client) CreateContact(ctx context.Context, vcard string) (string, error
 	if len(resps) == 0 {
 		return "", fmt.Errorf("create proton contact: empty response")
 	}
-	// CreateContactsRes wraps the per-contact result in Response.Contact.
+	// Each item carries its own API result; a batch can succeed at the HTTP level
+	// while an individual contact is rejected.
+	if code := resps[0].Response.Code; code != proton.SuccessCode {
+		return "", fmt.Errorf("create proton contact rejected (code %d): %s",
+			code, resps[0].Response.Message)
+	}
 	return resps[0].Response.Contact.ID, nil
 }
 
@@ -115,11 +124,12 @@ func (c *Client) UpdateContact(ctx context.Context, id, vcard string) error {
 		return err
 	}
 
-	req := proton.UpdateContactReq{
-		Cards: proton.Cards{&proton.Card{Type: proton.CardTypeClear, Data: vcard}},
+	cards, err := c.buildCards(vcard)
+	if err != nil {
+		return err
 	}
 
-	if _, err := raw.UpdateContact(ctx, id, req); err != nil {
+	if _, err := raw.UpdateContact(ctx, id, proton.UpdateContactReq{Cards: cards}); err != nil {
 		return fmt.Errorf("update proton contact %q: %w", id, err)
 	}
 	return nil
@@ -138,4 +148,131 @@ func (c *Client) DeleteContact(ctx context.Context, id string) error {
 		return fmt.Errorf("delete proton contact %q: %w", id, err)
 	}
 	return nil
+}
+
+// signedFields are the vCard properties Proton keeps in the cleartext signed
+// card (it needs them readable to index/contact); everything else is encrypted.
+var signedFields = map[string]bool{
+	govcard.FieldFormattedName: true,
+	govcard.FieldUID:           true,
+	govcard.FieldEmail:         true,
+	govcard.FieldCategories:    true,
+}
+
+// buildCards converts a full vCard string into the two-card structure Proton
+// expects: a cleartext signed card (VERSION + identity/email fields) and an
+// encrypted+signed card (everything else). A single unsigned/clear card is
+// rejected by the API (code 2001/2002, "invalid input").
+func (c *Client) buildCards(vcardStr string) (proton.Cards, error) {
+	kr, err := c.Keyring()
+	if err != nil {
+		return nil, err
+	}
+	return buildContactCards(kr, vcardStr)
+}
+
+func buildContactCards(kr *crypto.KeyRing, vcardStr string) (proton.Cards, error) {
+	parsed, err := govcard.NewDecoder(strings.NewReader(vcardStr)).Decode()
+	if err != nil {
+		return nil, fmt.Errorf("parse vcard: %w", err)
+	}
+
+	// Proton keeps identity/contactable fields in the cleartext signed card and
+	// encrypts the rest. Route each property accordingly; both cards carry their
+	// own VERSION.
+	signed := govcard.Card{}
+	signed.SetValue(govcard.FieldVersion, "4.0")
+	encrypted := govcard.Card{}
+	encrypted.SetValue(govcard.FieldVersion, "4.0")
+
+	for name, fields := range parsed {
+		if name == govcard.FieldVersion {
+			continue
+		}
+		if signedFields[name] {
+			signed[name] = fields
+		} else {
+			encrypted[name] = fields
+		}
+	}
+
+	// FN is mandatory in the signed card.
+	if signed.Value(govcard.FieldFormattedName) == "" {
+		signed.SetValue(govcard.FieldFormattedName, deriveFN(parsed))
+	}
+
+	// Proton requires every EMAIL to belong to a unique vCard group (it attaches
+	// per-email settings to the group). Assign item1, item2, … to any ungrouped
+	// emails.
+	for i, f := range signed[govcard.FieldEmail] {
+		if f.Group == "" {
+			f.Group = fmt.Sprintf("item%d", i+1)
+		}
+	}
+
+	signedData, err := encodeCard(signed)
+	if err != nil {
+		return nil, err
+	}
+	encryptedData, err := encodeCard(encrypted)
+	if err != nil {
+		return nil, err
+	}
+
+	signedCard, err := newSignedCard(kr, signedData, false)
+	if err != nil {
+		return nil, fmt.Errorf("build signed card: %w", err)
+	}
+	encryptedCard, err := newSignedCard(kr, encryptedData, true)
+	if err != nil {
+		return nil, fmt.Errorf("build encrypted card: %w", err)
+	}
+
+	return proton.Cards{encryptedCard, signedCard}, nil
+}
+
+// newSignedCard builds a Proton contact card: always detached-signed, and
+// encrypted as well when encrypt is true.
+func newSignedCard(kr *crypto.KeyRing, data string, encrypt bool) (*proton.Card, error) {
+	msg := crypto.NewPlainMessageFromString(data)
+
+	sig, err := kr.SignDetached(msg)
+	if err != nil {
+		return nil, fmt.Errorf("sign card: %w", err)
+	}
+	armoredSig, err := sig.GetArmored()
+	if err != nil {
+		return nil, fmt.Errorf("armor signature: %w", err)
+	}
+
+	card := &proton.Card{Type: proton.CardTypeSigned, Signature: armoredSig, Data: data}
+	if encrypt {
+		enc, encErr := kr.Encrypt(msg, nil)
+		if encErr != nil {
+			return nil, fmt.Errorf("encrypt card: %w", encErr)
+		}
+		armored, armErr := enc.GetArmored()
+		if armErr != nil {
+			return nil, fmt.Errorf("armor encrypted card: %w", armErr)
+		}
+		card.Type = proton.CardTypeSigned | proton.CardTypeEncrypted
+		card.Data = armored
+	}
+	return card, nil
+}
+
+func encodeCard(card govcard.Card) (string, error) {
+	var buf bytes.Buffer
+	if err := govcard.NewEncoder(&buf).Encode(card); err != nil {
+		return "", fmt.Errorf("encode card vcard: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// deriveFN produces a formatted name when the source vCard lacks FN.
+func deriveFN(card govcard.Card) string {
+	if n := card.Value(govcard.FieldName); n != "" {
+		return strings.TrimSpace(strings.ReplaceAll(n, ";", " "))
+	}
+	return "Unknown"
 }
