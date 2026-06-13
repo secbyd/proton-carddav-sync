@@ -11,13 +11,15 @@ import (
 	"github.com/spf13/viper"
 )
 
-// DefaultProtonAppVersion is the app version sent to the Proton API. The
-// upstream default ("go-proton-api") is rejected by Proton with
-// "Platform `go` is not valid", so a web-client-like value is required. This
-// can be overridden per-deployment via the proton.app_version config key or the
-// PCS_PROTON_APP_VERSION environment variable, since Proton occasionally tightens
-// which versions it accepts.
-const DefaultProtonAppVersion = "web-mail@5.0.999.0"
+// DefaultProtonAppVersion is the app version sent to the Proton API (the
+// x-pm-appversion header). The upstream go-proton-api default ("go-proton-api")
+// is rejected with "Platform `go` is not valid", and a fake web-mail version
+// makes Proton more likely to demand human verification (CAPTCHA). "Other" is
+// the identifier Proton accepts for unofficial clients — it is what hydroxide
+// ships. Override via the proton.app_version config key or the
+// PCS_PROTON_APP_VERSION environment variable (e.g. set it to the exact
+// x-pm-appversion your browser sends on mail.proton.me).
+const DefaultProtonAppVersion = "Other"
 
 // Sentinel errors for configuration validation.
 var (

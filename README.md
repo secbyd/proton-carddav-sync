@@ -62,7 +62,7 @@ edit it by hand). No secrets are stored in this file.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `proton.username` | — | Proton Mail email address |
-| `proton.app_version` | `web-mail@5.0.999.0` | `x-pm-appversion` sent to the Proton API (override with `PCS_PROTON_APP_VERSION`) |
+| `proton.app_version` | `Other` | `x-pm-appversion` sent to the Proton API (override with `PCS_PROTON_APP_VERSION`) |
 | `carddav.url` | — | Full CardDAV collection URL |
 | `carddav.username` | — | CardDAV username |
 | `sync.direction` | `both` | `both` / `proton-to-carddav` / `carddav-to-proton` |
@@ -77,6 +77,29 @@ edit it by hand). No secrets are stored in this file.
 |----------|----------|-------------|
 | `PCS_ENCRYPTION_KEY` | yes | Master key that encrypts the stored Proton session and CardDAV password. The same value must be set for `init` and the daemon. |
 | `PCS_PROTON_APP_VERSION` | no | Overrides `proton.app_version` at runtime, for tracking Proton's accepted client versions without editing the config. |
+
+## Troubleshooting
+
+### Login fails with a CAPTCHA / "human verification" / "unusual activity" error
+
+This is Proton's anti-abuse **human verification** (API error `9001`), not a bug
+in how this tool talks to the API — it logs in through Proton's normal SRP auth
+flow. Proton triggers it mainly on **server/VPS/datacenter and VPN IP addresses**
+(and, to a lesser degree, on unrecognized app versions).
+
+Things to try, in order:
+
+1. **Run `init` from a trusted connection.** Because credentials are a portable,
+   long-lasting session stored in the SQLite database, you can run `init` on your
+   laptop at home, then copy `~/.local/share/proton-carddav-sync/sync.db` (and use
+   the same `PCS_ENCRYPTION_KEY`) to the server that runs the daemon.
+2. **Match a real app version.** Open `mail.proton.me` in your browser, find the
+   `x-pm-appversion` request header in the Network tab, and set
+   `PCS_PROTON_APP_VERSION` to that exact value.
+3. **Wait and retry** — the limit is sometimes temporary.
+
+Interactive CAPTCHA solving from the CLI is not yet implemented; the session you
+create on a trusted connection is the supported path for headless servers.
 
 ## Systemd Unit
 

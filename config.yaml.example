@@ -14,10 +14,11 @@
 proton:
   # Proton Mail username (email address).
   username: "user@proton.me"
-  # x-pm-appversion sent to the Proton API. The library default is rejected by
-  # Proton, so a web-client-like value is required. Override at runtime with the
-  # PCS_PROTON_APP_VERSION environment variable if Proton stops accepting this.
-  app_version: "web-mail@5.0.999.0"
+  # x-pm-appversion sent to the Proton API. "Other" is the identifier Proton
+  # accepts for unofficial clients (same as hydroxide). Override at runtime with
+  # the PCS_PROTON_APP_VERSION environment variable — e.g. set it to the exact
+  # x-pm-appversion your browser sends on mail.proton.me if you hit CAPTCHA.
+  app_version: "Other"
 
 carddav:
   # Full CardDAV collection URL,
