@@ -3,7 +3,7 @@
 # ─── build ─────────────────────────────────────────────────────────────────
 # golang:bookworm already ships gcc, so CGO (required by go-sqlite3) works with
 # no extra packages. glibc here matches the glibc runtime below.
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-bookworm AS build
 
 ENV CGO_ENABLED=1 GOTOOLCHAIN=local
 WORKDIR /src
@@ -22,6 +22,7 @@ RUN go build -mod=vendor -trimpath \
 # gcr.io/distroless/base-debian12:nonroot.
 FROM debian:bookworm-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/* \

@@ -39,7 +39,7 @@ type Credentials struct {
 // Open opens (or creates) the SQLite database at path, enables WAL mode, and
 // runs schema migrations. The parent directory is created if missing; SQLite
 // creates the database file itself, but only when its directory already exists.
-func Open(path string) (*sql.DB, error) {
+func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create database directory %q: %w", dir, err)
@@ -51,7 +51,7 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open sqlite3 at %q: %w", path, err)
 	}
 
-	if err := migrate(db); err != nil {
+	if err := migrate(ctx, db); err != nil {
 		// go-defensive: defer cleanup — close on error so caller never holds a
 		// half-initialised handle.
 		_ = db.Close()
@@ -61,7 +61,7 @@ func Open(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-func migrate(db *sql.DB) error {
+func migrate(ctx context.Context, db *sql.DB) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS credentials (
     id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     updated_at   INTEGER NOT NULL DEFAULT 0
 );`
 
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("exec schema: %w", err)
 	}
 
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 	// ALTER TABLE ADD COLUMN errors if the column already exists, so each is
 	// guarded by a table-definition check.
 	for _, col := range []string{"proton_uid_enc", "proton_refresh_enc", "proton_keypass_enc"} {
-		if err := ensureColumn(db, "credentials", col,
+		if err := ensureColumn(ctx, db, "credentials", col,
 			fmt.Sprintf("ALTER TABLE credentials ADD COLUMN %s BLOB NOT NULL DEFAULT x''", col)); err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 	// proton_base / carddav_base hold each side's last-synced vCard, the per-side
 	// bases for the three-way merge.
 	for _, col := range []string{"proton_base", "carddav_base"} {
-		if err := ensureColumn(db, "contacts", col,
+		if err := ensureColumn(ctx, db, "contacts", col,
 			fmt.Sprintf("ALTER TABLE contacts ADD COLUMN %s TEXT NOT NULL DEFAULT ''", col)); err != nil {
 			return err
 		}
@@ -106,8 +106,8 @@ CREATE TABLE IF NOT EXISTS contacts (
 }
 
 // ensureColumn adds a column via alterStmt when it is missing from table.
-func ensureColumn(db *sql.DB, table, column, alterStmt string) error {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+func ensureColumn(ctx context.Context, db *sql.DB, table, column, alterStmt string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table)) //nolint:gosec // table is an internal constant, not user input
 	if err != nil {
 		return fmt.Errorf("inspect %s columns: %w", table, err)
 	}
@@ -132,7 +132,7 @@ func ensureColumn(db *sql.DB, table, column, alterStmt string) error {
 		return fmt.Errorf("iterate %s columns: %w", table, rows.Err())
 	}
 
-	if _, err := db.Exec(alterStmt); err != nil {
+	if _, err := db.ExecContext(ctx, alterStmt); err != nil {
 		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil

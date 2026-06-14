@@ -62,7 +62,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	sqlDB, err := db.Open(cfg.Database.Path)
+	sqlDB, err := db.Open(ctx, cfg.Database.Path)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

@@ -18,7 +18,7 @@ func TestMigrateAddsContactBaseColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
 	}
-	_, err = raw.Exec(`CREATE TABLE contacts (
+	_, err = raw.ExecContext(context.Background(), `CREATE TABLE contacts (
         uid TEXT PRIMARY KEY,
         etag TEXT NOT NULL DEFAULT '',
         vcard_hash TEXT NOT NULL DEFAULT '',
@@ -27,13 +27,13 @@ func TestMigrateAddsContactBaseColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create old schema: %v", err)
 	}
-	if _, seedErr := raw.Exec(`INSERT INTO contacts (uid) VALUES ('legacy')`); seedErr != nil {
+	if _, seedErr := raw.ExecContext(context.Background(), `INSERT INTO contacts (uid) VALUES ('legacy')`); seedErr != nil {
 		t.Fatalf("seed legacy row: %v", seedErr)
 	}
 	raw.Close()
 
 	// Open through the real code path — this must run the migration.
-	conn, err := Open(path)
+	conn, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Open (migrate): %v", err)
 	}

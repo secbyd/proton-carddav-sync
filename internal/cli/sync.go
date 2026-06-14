@@ -40,7 +40,7 @@ func runSync(cmd *cobra.Command, _ []string) error {
 
 // runSyncWithConfig is the shared implementation used by both sync and run.
 func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
-	sqlDB, err := db.Open(cfg.Database.Path)
+	sqlDB, err := db.Open(ctx, cfg.Database.Path)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
