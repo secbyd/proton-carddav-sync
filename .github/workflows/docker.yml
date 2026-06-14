@@ -58,3 +58,16 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Publish the repository overview (DOCKERHUB.md) to the Docker Hub repo
+      # page. Only on main pushes. If the token lacks permission for the
+      # description API, set DOCKERHUB_TOKEN to an account password instead.
+      - name: Update Docker Hub repository overview
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/proton-carddav-sync
+          short-description: "Sync Proton Mail contacts with any CardDAV server (Nextcloud, Radicale, Baikal)."
+          readme-filepath: ./DOCKERHUB.md

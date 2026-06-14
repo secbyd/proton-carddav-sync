@@ -270,6 +270,10 @@ image on every push/PR and **publishes to Docker Hub** on pushes to `main` and o
 Tags pushed: `latest` (default branch), the git tag for `v*` releases, and a
 `sha-<short>` for each commit.
 
+The Docker Hub repository overview is kept in sync from
+[`DOCKERHUB.md`](DOCKERHUB.md): on each `main` push the workflow publishes it as
+the repo's description (and a short tagline) via the same secrets.
+
 ## Systemd Unit
 
 ```ini
