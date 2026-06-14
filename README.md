@@ -13,7 +13,7 @@ A lightweight Go daemon that keeps your **Proton Mail contacts** in sync with an
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.25+
 - gcc (for cgo, required by `mattn/go-sqlite3`)
 
 ## Quick Start

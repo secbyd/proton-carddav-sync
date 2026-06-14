@@ -23,7 +23,7 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
 	// golang.org/x/exp/slices already uses the new signature, so the upstream
 	// bool-returning form no longer compiles. We keep the x/exp/slices import
 	// (go-proton-api declares go 1.18, which cannot import the stdlib cmp/slices
-	// packages) and only convert the comparator body. See patches/README.md.
+	// packages) and only convert the comparator body.
 	slices.SortFunc(res.Addresses, func(a, b Address) int {
 		switch {
 		case a.Order < b.Order:

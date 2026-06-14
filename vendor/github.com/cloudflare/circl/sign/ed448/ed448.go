@@ -2,11 +2,11 @@
 //
 // This package implements two signature variants.
 //
-//  | Scheme Name | Sign Function     | Verification  | Context           |
-//  |-------------|-------------------|---------------|-------------------|
-//  | Ed448       | Sign              | Verify        | Yes, can be empty |
-//  | Ed448Ph     | SignPh            | VerifyPh      | Yes, can be empty |
-//  | All above   | (PrivateKey).Sign | VerifyAny     | As above          |
+//	| Scheme Name | Sign Function     | Verification  | Context           |
+//	|-------------|-------------------|---------------|-------------------|
+//	| Ed448       | Sign              | Verify        | Yes, can be empty |
+//	| Ed448Ph     | SignPh            | VerifyPh      | Yes, can be empty |
+//	| All above   | (PrivateKey).Sign | VerifyAny     | As above          |
 //
 // Specific functions for sign and verify are defined. A generic signing
 // function for all schemes is available through the crypto.Signer interface,
@@ -18,9 +18,9 @@
 //
 // References:
 //
-//  - RFC8032 https://rfc-editor.org/rfc/rfc8032.txt
-//  - EdDSA for more curves https://eprint.iacr.org/2015/677
-//  - High-speed high-security signatures. https://doi.org/10.1007/s13389-012-0027-1
+//   - RFC8032: https://rfc-editor.org/rfc/rfc8032.txt
+//   - EdDSA for more curves: https://eprint.iacr.org/2015/677
+//   - High-speed high-security signatures: https://doi.org/10.1007/s13389-012-0027-1
 package ed448
 
 import (
@@ -206,7 +206,7 @@ func newKeyFromSeed(privateKey, seed []byte) {
 
 func signAll(signature []byte, privateKey PrivateKey, message, ctx []byte, preHash bool) {
 	if len(ctx) > ContextMaxSize {
-		panic(fmt.Errorf("ed448: bad context length: " + strconv.Itoa(len(ctx))))
+		panic(fmt.Errorf("ed448: bad context length: %v", len(ctx)))
 	}
 
 	H := sha3.NewShake256()
