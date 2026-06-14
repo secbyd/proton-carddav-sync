@@ -1,0 +1,14 @@
+# Keep the build context small. vendor/ is intentionally INCLUDED (the build
+# uses -mod=vendor and has no network access).
+.git
+.github
+.golangci.yml
+dist/
+/proton-carddav-sync
+/main
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+secrets.env
+.DS_Store

@@ -176,6 +176,85 @@ If you somehow still hit a CAPTCHA:
    `PCS_ENCRYPTION_KEY`) to the server — the stored session is portable.
 4. **Wait and retry** — the limit is sometimes temporary.
 
+## Docker
+
+A container image is published to Docker Hub as
+**`<your-namespace>/proton-carddav-sync`** (glibc `debian:bookworm-slim` base, so
+the CGO `go-sqlite3` driver works out of the box).
+
+The image uses two volumes:
+
+- **`/config`** — holds `config.yaml`. Set `database.path: /data/sync.db` in it.
+- **`/data`** — holds the SQLite database (credentials + sync state).
+
+`PCS_ENCRYPTION_KEY` must be passed at runtime; it is never baked into the image.
+
+### 1. Initialise (interactive — prompts for passwords and TOTP)
+
+```bash
+docker run --rm -it \
+  -e PCS_ENCRYPTION_KEY="a-long-random-passphrase" \
+  -v pcs-config:/config -v pcs-data:/data \
+  <your-namespace>/proton-carddav-sync \
+  init --config /config/config.yaml
+```
+
+With no config present, `init` prompts for every setting (set
+`database.path` to `/data/sync.db`), then logs in to Proton (asking for a TOTP
+code if 2FA is on) and stores the encrypted session.
+
+> Named volumes (`pcs-config`, `pcs-data`) are recommended — they're owned by the
+> image's non-root user (uid 10001) automatically. If you bind-mount host
+> directories instead, make them writable by uid 10001 (e.g. `chown -R 10001 …`).
+
+### 2. Run the daemon
+
+```bash
+docker run -d --name proton-carddav-sync --restart unless-stopped \
+  -e PCS_ENCRYPTION_KEY="a-long-random-passphrase" \
+  -v pcs-config:/config -v pcs-data:/data \
+  <your-namespace>/proton-carddav-sync
+```
+
+### docker compose
+
+```yaml
+services:
+  proton-carddav-sync:
+    image: <your-namespace>/proton-carddav-sync:latest
+    restart: unless-stopped
+    environment:
+      PCS_ENCRYPTION_KEY: "a-long-random-passphrase"
+    volumes:
+      - pcs-config:/config
+      - pcs-data:/data
+volumes:
+  pcs-config:
+  pcs-data:
+```
+
+(Run `init` once with `docker compose run --rm -it proton-carddav-sync init --config /config/config.yaml` before `up -d`.)
+
+### Building / publishing the image
+
+Build locally:
+
+```bash
+docker build -t proton-carddav-sync --build-arg VERSION=$(git describe --tags --always) .
+```
+
+CI ([`.github/workflows/docker.yml`](.github/workflows/docker.yml)) builds the
+image on every push/PR and **publishes to Docker Hub** on pushes to `main` and on
+`v*` tags. To enable publishing, add two repository secrets:
+
+| Secret | Value |
+|--------|-------|
+| `DOCKERHUB_USERNAME` | your Docker Hub account/namespace |
+| `DOCKERHUB_TOKEN` | a Docker Hub access token (Account Settings → Security) |
+
+Tags pushed: `latest` (default branch), the git tag for `v*` releases, and a
+`sha-<short>` for each commit.
+
 ## Systemd Unit
 
 ```ini

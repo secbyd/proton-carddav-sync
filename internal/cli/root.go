@@ -10,6 +10,9 @@ import (
 
 var cfgFile string
 
+// Version is the build version, set from main (which receives it via ldflags).
+var Version = "dev"
+
 // rootCmd is the base command when called without any sub-commands.
 var rootCmd = &cobra.Command{
 	Use:   "proton-carddav-sync",
@@ -24,6 +27,7 @@ Run 'proton-carddav-sync init' once to store encrypted credentials, then
 // Execute adds all child commands to the root command and runs it.
 // Errors are written to stderr and the process exits with code 1.
 func Execute() {
+	rootCmd.Version = Version
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
