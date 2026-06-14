@@ -178,9 +178,9 @@ If you somehow still hit a CAPTCHA:
 
 ## Docker
 
-A container image is published to Docker Hub as
-**`<your-namespace>/proton-carddav-sync`** (glibc `debian:bookworm-slim` base, so
-the CGO `go-sqlite3` driver works out of the box).
+A multi-arch (`linux/amd64` + `linux/arm64`) container image is published to
+Docker Hub as **`secbyd/proton-carddav-sync`** (glibc `debian:bookworm-slim`
+base, so the CGO `go-sqlite3` driver works out of the box).
 
 The image uses two volumes:
 
@@ -195,7 +195,7 @@ The image uses two volumes:
 docker run --rm -it \
   -e PCS_ENCRYPTION_KEY="a-long-random-passphrase" \
   -v pcs-config:/config -v pcs-data:/data \
-  <your-namespace>/proton-carddav-sync \
+  secbyd/proton-carddav-sync \
   init --config /config/config.yaml
 ```
 
@@ -213,15 +213,30 @@ code if 2FA is on) and stores the encrypted session.
 docker run -d --name proton-carddav-sync --restart unless-stopped \
   -e PCS_ENCRYPTION_KEY="a-long-random-passphrase" \
   -v pcs-config:/config -v pcs-data:/data \
-  <your-namespace>/proton-carddav-sync
+  secbyd/proton-carddav-sync
 ```
+
+### Initialising via `exec` (orchestration UIs: Portainer, Unraid, …)
+
+If you can't run a one-off interactive container (step 1) — e.g. you deploy
+through a web UI — start the container with the **`idle`** command first, so it
+stays up without syncing, then `exec` into it to configure:
+
+```bash
+# start idle (override the command); then, once running:
+docker exec -it <container> proton-carddav-sync init --config /config/config.yaml
+```
+
+`init` prompts for the passwords and the TOTP code. When it finishes, restart the
+container with its default command (`run`) to begin syncing. (`idle` needs no
+shell, so it also works on minimal/distroless bases.)
 
 ### docker compose
 
 ```yaml
 services:
   proton-carddav-sync:
-    image: <your-namespace>/proton-carddav-sync:latest
+    image: secbyd/proton-carddav-sync:latest
     restart: unless-stopped
     environment:
       PCS_ENCRYPTION_KEY: "a-long-random-passphrase"

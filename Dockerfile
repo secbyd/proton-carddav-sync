@@ -25,7 +25,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --create-home --home-dir /home/pcs pcs \
+ && useradd --uid 10001 --create-home --home-dir /home/pcs pcs \
  && mkdir -p /config /data \
  && chown pcs:pcs /config /data
 

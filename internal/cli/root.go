@@ -41,4 +41,5 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(idleCmd)
 }
