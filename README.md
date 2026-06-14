@@ -203,9 +203,16 @@ With no config present, `init` prompts for every setting (set
 `database.path` to `/data/sync.db`), then logs in to Proton (asking for a TOTP
 code if 2FA is on) and stores the encrypted session.
 
-> Named volumes (`pcs-config`, `pcs-data`) are recommended — they're owned by the
-> image's non-root user (uid 10001) automatically. If you bind-mount host
-> directories instead, make them writable by uid 10001 (e.g. `chown -R 10001 …`).
+> **Volume permissions.** The container runs as non-root (uid 10001). Named
+> volumes (`pcs-config`, `pcs-data`) inherit that ownership automatically and
+> just work. If you **bind-mount host directories** owned by a different user,
+> either:
+> - run the container as your host user — `--user $(id -u):$(id -g)` (or
+>   `user: "1000:1000"` in compose); apply it to the `init` run too — or
+> - `chown -R 10001:10001` the host directories.
+>
+> The binary uses absolute `--config`/`database.path`, so it needs no writable
+> home and works fine under an overridden `--user`.
 
 ### 2. Run the daemon
 

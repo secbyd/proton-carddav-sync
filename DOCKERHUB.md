@@ -41,8 +41,10 @@ never baked into the image, and the **same value** is required by `init` and the
 daemon.
 
 > The container runs as a non-root user (uid 10001). **Named volumes** (as below)
-> work out of the box; if you bind-mount host directories, make them writable by
-> uid 10001.
+> work out of the box. If you **bind-mount host directories** owned by another
+> user, run the container as that user — `--user $(id -u):$(id -g)` (or
+> `user: "1000:1000"` in compose), applied to the `init` run too — or
+> `chown -R 10001:10001` the host directories.
 
 ## Usage
 
