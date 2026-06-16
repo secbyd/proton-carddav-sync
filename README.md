@@ -45,8 +45,11 @@ PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync sync
 PCS_ENCRYPTION_KEY="a-long-random-passphrase" ./proton-carddav-sync run
 ```
 
-> **Credential model.** Inspired by [hydroxide](https://github.com/emersion/hydroxide)
-> and ferroxide, `init` exchanges your password for a durable Proton session
+> **Inspired by:** [Go Proton API](https://github.com/ProtonMail/go-proton-api), [Hydroxide](https://github.com/emersion/hydroxide) and [Ferroxide](https://github.com/acheong08/ferroxide)>
+>
+> **Credential model**
+>  
+> `init` exchanges your password for a durable Proton session
 > (UID + a rotating refresh token + the derived mailbox key) rather than keeping
 > the password. That session and the CardDAV password are encrypted with a key
 > derived from `PCS_ENCRYPTION_KEY` (PBKDF2) and stored in SQLite — never in
@@ -342,4 +345,4 @@ internal/
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
