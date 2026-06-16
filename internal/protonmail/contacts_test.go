@@ -28,7 +28,7 @@ func TestBuildContactCards(t *testing.T) {
 	const src = "BEGIN:VCARD\r\nVERSION:3.0\r\n" +
 		"FN:Test 2\r\nN:2;Test;;;\r\n" +
 		"EMAIL:a@example.com\r\nEMAIL:b@example.com\r\n" +
-		"TEL:+311\r\nUID:uid-123\r\nEND:VCARD\r\n"
+		"TEL:+311\r\nUID:uid-123\r\nCATEGORIES:Friends,Work\r\nEND:VCARD\r\n"
 
 	cards, err := buildContactCards(kr, src)
 	if err != nil {
@@ -59,6 +59,13 @@ func TestBuildContactCards(t *testing.T) {
 	if sc.Value(govcard.FieldUID) != "uid-123" {
 		t.Errorf("signed UID = %q, want uid-123", sc.Value(govcard.FieldUID))
 	}
+	// Only FN/UID/EMAIL are allowed in the signed card; CATEGORIES (and N/TEL)
+	// must NOT appear there (Proton rejects them — code 2001).
+	for _, banned := range []string{govcard.FieldCategories, govcard.FieldName, "TEL"} {
+		if sc.Value(banned) != "" {
+			t.Errorf("signed card unexpectedly contains %s=%q (must be encrypted)", banned, sc.Value(banned))
+		}
+	}
 
 	// Every EMAIL must carry a unique, non-empty group (Proton requirement).
 	emails := sc[govcard.FieldEmail]
@@ -84,6 +91,9 @@ func TestBuildContactCards(t *testing.T) {
 	}
 	if merged.Value("TEL") != "+311" {
 		t.Errorf("merged TEL = %q, want +311", merged.Value("TEL"))
+	}
+	if merged.Value(govcard.FieldCategories) == "" {
+		t.Error("merged card lost CATEGORIES (must be preserved in the encrypted card)")
 	}
 	if merged.Value(govcard.FieldFormattedName) != "Test 2" {
 		t.Errorf("merged FN = %q, want Test 2", merged.Value(govcard.FieldFormattedName))

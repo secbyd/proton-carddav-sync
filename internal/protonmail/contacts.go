@@ -150,13 +150,15 @@ func (c *Client) DeleteContact(ctx context.Context, id string) error {
 	return nil
 }
 
-// signedFields are the vCard properties Proton keeps in the cleartext signed
-// card (it needs them readable to index/contact); everything else is encrypted.
+// signedFields are the ONLY vCard properties Proton permits in the cleartext
+// signed card (FN, UID, EMAIL, plus VERSION which is handled separately). Every
+// other property — CATEGORIES, N, TEL, ADR, NOTE, ORG, … — MUST go in the
+// encrypted card, or the API rejects the contact with code 2001 ("field not
+// allowed as readable text or signed vCard").
 var signedFields = map[string]bool{
 	govcard.FieldFormattedName: true,
 	govcard.FieldUID:           true,
 	govcard.FieldEmail:         true,
-	govcard.FieldCategories:    true,
 }
 
 // buildCards converts a full vCard string into the two-card structure Proton
