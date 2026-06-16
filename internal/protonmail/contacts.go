@@ -206,11 +206,28 @@ func buildContactCards(kr *crypto.KeyRing, vcardStr string) (proton.Cards, error
 	// Proton requires every EMAIL to belong to a unique vCard group (it attaches
 	// per-email settings to the group). Assign item1, item2, … to any ungrouped
 	// emails.
+	//
+	// Apple/Synology label emails with a separate `itemN.X-ABLabel` property.
+	// Because that label lives in its own (encrypted) property, Proton renders
+	// the email's type from the group ordinal + label ("item1" -> "1home"). Fold
+	// the label into the EMAIL's own TYPE parameter and drop the X-ABLabel so
+	// Proton shows a clean "Home"/"Work".
+	labels := abLabelsByGroup(parsed)
+	consumed := map[string]bool{}
 	for i, f := range signed[govcard.FieldEmail] {
 		if f.Group == "" {
 			f.Group = fmt.Sprintf("item%d", i+1)
 		}
+		if lbl := labels[f.Group]; lbl != "" {
+			setEmailType(f, lbl)
+			consumed[f.Group] = true
+		} else {
+			dropGenericType(f)
+		}
 	}
+	// Remove the X-ABLabels we folded into TYPE (labels for other groups — e.g.
+	// phones — stay in the encrypted card where they render fine).
+	removeABLabels(encrypted, consumed)
 
 	signedData, err := encodeCard(signed)
 	if err != nil {
@@ -269,6 +286,91 @@ func encodeCard(card govcard.Card) (string, error) {
 		return "", fmt.Errorf("encode card vcard: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// abLabelKey returns the actual map key for the X-ABLabel property (vCard
+// property names are case-insensitive), if present.
+func abLabelKey(card govcard.Card) (string, bool) {
+	for name := range card {
+		if strings.EqualFold(name, "X-ABLabel") {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// abLabelsByGroup maps each vCard group to its decoded X-ABLabel value.
+func abLabelsByGroup(card govcard.Card) map[string]string {
+	out := map[string]string{}
+	key, ok := abLabelKey(card)
+	if !ok {
+		return out
+	}
+	for _, f := range card[key] {
+		if f.Group != "" && f.Value != "" {
+			out[f.Group] = decodeABLabel(f.Value)
+		}
+	}
+	return out
+}
+
+// decodeABLabel unwraps Apple's `_$!<Home>!$_` label encoding to `Home`.
+func decodeABLabel(s string) string {
+	if strings.HasPrefix(s, "_$!<") && strings.HasSuffix(s, ">!$_") {
+		return s[len("_$!<") : len(s)-len(">!$_")]
+	}
+	return s
+}
+
+// setEmailType sets the EMAIL's TYPE parameter to label (replacing any existing
+// TYPE, including the generic "INTERNET").
+func setEmailType(f *govcard.Field, label string) {
+	if f.Params == nil {
+		f.Params = govcard.Params{}
+	}
+	f.Params[govcard.ParamType] = []string{label}
+}
+
+// dropGenericType removes the noise-only "INTERNET" TYPE value so Proton does
+// not show it as the email's label.
+func dropGenericType(f *govcard.Field) {
+	if f.Params == nil {
+		return
+	}
+	kept := f.Params[govcard.ParamType][:0:0]
+	for _, t := range f.Params[govcard.ParamType] {
+		if !strings.EqualFold(t, "internet") {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) == 0 {
+		delete(f.Params, govcard.ParamType)
+	} else {
+		f.Params[govcard.ParamType] = kept
+	}
+}
+
+// removeABLabels drops X-ABLabel entries whose group is in groups (their label
+// has been folded into the email TYPE).
+func removeABLabels(card govcard.Card, groups map[string]bool) {
+	if len(groups) == 0 {
+		return
+	}
+	key, ok := abLabelKey(card)
+	if !ok {
+		return
+	}
+	var kept []*govcard.Field
+	for _, f := range card[key] {
+		if !groups[f.Group] {
+			kept = append(kept, f)
+		}
+	}
+	if len(kept) == 0 {
+		delete(card, key)
+	} else {
+		card[key] = kept
+	}
 }
 
 // deriveFN produces a formatted name when the source vCard lacks FN.

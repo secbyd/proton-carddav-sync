@@ -22,6 +22,52 @@ func testKeyRing(t *testing.T) *crypto.KeyRing {
 	return kr
 }
 
+func TestBuildContactCardsEmailLabels(t *testing.T) {
+	kr := testKeyRing(t)
+
+	// Synology/Apple style: grouped emails labelled via X-ABLabel (one Apple-
+	// encoded, one plain) plus a generic INTERNET type.
+	const src = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:John Doe\r\n" +
+		"item1.EMAIL;TYPE=INTERNET:home@example.com\r\nitem1.X-ABLabel:_$!<Home>!$_\r\n" +
+		"item2.EMAIL;TYPE=INTERNET:work@example.com\r\nitem2.X-ABLabel:work\r\n" +
+		"UID:syn-1\r\nEND:VCARD\r\n"
+
+	cards, err := buildContactCards(kr, src)
+	if err != nil {
+		t.Fatalf("buildContactCards: %v", err)
+	}
+	signed, _ := cards.Get(proton.CardTypeSigned)
+	sc, err := govcard.NewDecoder(strings.NewReader(signed.Data)).Decode()
+	if err != nil {
+		t.Fatalf("decode signed: %v", err)
+	}
+
+	// Label folded into the email's TYPE; no group-ordinal prefix possible.
+	want := map[string]string{"home@example.com": "Home", "work@example.com": "work"}
+	for _, f := range sc[govcard.FieldEmail] {
+		gotType := ""
+		if len(f.Params[govcard.ParamType]) > 0 {
+			gotType = f.Params[govcard.ParamType][0]
+		}
+		if w := want[f.Value]; gotType != w {
+			t.Errorf("email %s TYPE = %q, want %q", f.Value, gotType, w)
+		}
+		for _, ty := range f.Params[govcard.ParamType] {
+			if strings.EqualFold(ty, "internet") {
+				t.Errorf("email %s still has generic INTERNET type", f.Value)
+			}
+		}
+	}
+	// The folded X-ABLabels must not linger anywhere.
+	full, err := cards.Merge(kr)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if k, ok := abLabelKey(full); ok && len(full[k]) > 0 {
+		t.Errorf("X-ABLabel survived for folded email groups: %v", full[k])
+	}
+}
+
 func TestBuildContactCards(t *testing.T) {
 	kr := testKeyRing(t)
 
