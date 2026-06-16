@@ -233,11 +233,13 @@ func (s *Syncer) syncCardDAVToProton(ctx context.Context) error {
 }
 
 // contactSide holds a contact's current vCard plus the handles needed to write
-// back to that side (id for Proton, etag for CardDAV).
+// back to that side (id for Proton, etag for CardDAV). name is the display name
+// (FN), purely for human-readable logging — UIDs alone are unidentifiable.
 type contactSide struct {
 	id    string
 	etag  string
 	vcard string
+	name  string
 }
 
 // reconcile performs a bidirectional, per-contact three-way merge over the union
@@ -291,20 +293,20 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 		case hasP && !hasC:
 			if hasBase {
 				s.log.Warn("contact gone from carddav; not deleting/resurrecting "+
-					"(whole-contact deletion is not synced)", "uid", uid)
+					"(whole-contact deletion is not synced)", "uid", uid, "name", pe.name)
 				continue
 			}
 			if putErr := s.carddav.PutContact(ctx, uid, pe.vcard); putErr != nil {
 				return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
 			}
-			s.log.Info("created proton→carddav", "uid", uid)
+			s.log.Info("created proton→carddav", "uid", uid, "name", pe.name)
 			if err := s.saveBases(ctx, uid, "", pe.vcard, pe.vcard); err != nil {
 				return err
 			}
 		case !hasP && hasC:
 			if hasBase {
 				s.log.Warn("contact gone from proton; not deleting/resurrecting "+
-					"(whole-contact deletion is not synced)", "uid", uid)
+					"(whole-contact deletion is not synced)", "uid", uid, "name", ce.name)
 				continue
 			}
 			// Bound the number of new Proton contacts per run so a large first
@@ -328,7 +330,7 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 			} else {
 				protonBase = refetched
 			}
-			s.log.Info("created carddav→proton", "uid", uid)
+			s.log.Info("created carddav→proton", "uid", uid, "name", ce.name)
 			if err := s.saveBases(ctx, uid, ce.etag, protonBase, ce.vcard); err != nil {
 				return err
 			}
@@ -362,7 +364,7 @@ func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide
 		if putErr := s.carddav.PutContact(ctx, uid, merged); putErr != nil {
 			return fmt.Errorf("put carddav contact %q: %w", uid, putErr)
 		}
-		s.log.Info("merged proton↔carddav → carddav", "uid", uid)
+		s.log.Info("merged proton↔carddav → carddav", "uid", uid, "name", c.name)
 	}
 
 	// Write Proton only when a Proton-modelled property changed (avoids churning
@@ -377,10 +379,10 @@ func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide
 		if updErr := s.proton.UpdateContact(ctx, p.id, merged); updErr != nil {
 			// Skip this contact rather than aborting the whole sync; the base is
 			// left unchanged so it's retried next run.
-			s.log.Warn("skip contact: proton update failed", "uid", uid, "err", updErr)
+			s.log.Warn("skip contact: proton update failed", "uid", uid, "name", c.name, "err", updErr)
 			return nil
 		}
-		s.log.Info("merged proton↔carddav → proton", "uid", uid)
+		s.log.Info("merged proton↔carddav → proton", "uid", uid, "name", c.name)
 		if refetched, refErr := s.proton.GetContactVCard(ctx, p.id); refErr != nil {
 			s.log.Warn("proton refetch after update failed; base may be stale", "uid", uid, "err", refErr)
 		} else {
@@ -401,19 +403,41 @@ func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide
 // Per-contact failures are logged and skipped so one bad contact does not abort
 // the run.
 func (s *Syncer) ForceContacts(ctx context.Context, uids []string, all bool) error {
-	protonIdx, err := s.protonByUID(ctx)
-	if err != nil {
-		return err
-	}
 	carddavIdx, err := s.carddavIndex(ctx)
 	if err != nil {
 		return err
 	}
 
+	// Proton's contact list returns metadata (ID, Name, UID) WITHOUT the cards,
+	// so a UID resolves to its Proton contact ID — and display name — with no
+	// per-contact card fetch. We then fetch a card only when a contact actually
+	// needs copying Proton→CardDAV. This keeps `resync --uid` fast.
+	contacts, err := s.proton.ListContacts(ctx)
+	if err != nil {
+		return fmt.Errorf("list proton contacts: %w", err)
+	}
+	protonMeta := make(map[string]contactSide, len(contacts))
+	metaComplete := true
+	for _, ct := range contacts {
+		if ct.UID == "" {
+			metaComplete = false
+			continue
+		}
+		protonMeta[ct.UID] = contactSide{id: ct.ID, name: ct.Name}
+	}
+	// If the list omits UIDs we can't map reliably without the cards; fall back
+	// to the full (slower) index for correctness.
+	if !metaComplete {
+		s.log.Info("proton list missing UIDs; falling back to full card fetch")
+		if protonMeta, err = s.protonByUID(ctx); err != nil {
+			return err
+		}
+	}
+
 	targets := uids
 	if all {
-		set := make(map[string]struct{}, len(protonIdx)+len(carddavIdx))
-		for uid := range protonIdx {
+		set := make(map[string]struct{}, len(protonMeta)+len(carddavIdx))
+		for uid := range protonMeta {
 			set[uid] = struct{}{}
 		}
 		for uid := range carddavIdx {
@@ -425,7 +449,7 @@ func (s *Syncer) ForceContacts(ctx context.Context, uids []string, all bool) err
 		}
 	}
 	s.log.Info("resync: forcing contacts",
-		"targets", len(targets), "proton", len(protonIdx), "carddav", len(carddavIdx))
+		"targets", len(targets), "proton", len(protonMeta), "carddav", len(carddavIdx))
 
 	for _, uid := range targets {
 		select {
@@ -433,16 +457,20 @@ func (s *Syncer) ForceContacts(ctx context.Context, uids []string, all bool) err
 			return ctx.Err()
 		default:
 		}
-		if err := s.forceOne(ctx, uid, protonIdx[uid], carddavIdx[uid], protonIdx, carddavIdx); err != nil {
+		pe, hasP := protonMeta[uid]
+		ce, hasC := carddavIdx[uid]
+		if err := s.forceOne(ctx, uid, pe, hasP, ce, hasC); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Syncer) forceOne(ctx context.Context, uid string, pe, ce contactSide, protonIdx, carddavIdx map[string]contactSide) error {
-	_, hasP := protonIdx[uid]
-	_, hasC := carddavIdx[uid]
+func (s *Syncer) forceOne(ctx context.Context, uid string, pe contactSide, hasP bool, ce contactSide, hasC bool) error {
+	name := ce.name
+	if name == "" {
+		name = pe.name
+	}
 
 	switch {
 	case !hasP && !hasC:
@@ -450,28 +478,39 @@ func (s *Syncer) forceOne(ctx context.Context, uid string, pe, ce contactSide, p
 		return nil
 
 	case hasP && !hasC:
-		if putErr := s.carddav.PutContact(ctx, uid, pe.vcard); putErr != nil {
-			s.log.Warn("force: carddav create failed", "uid", uid, "err", putErr)
+		// Copy Proton→CardDAV; fetch the Proton card now (metadata-only index
+		// didn't fetch it).
+		v := pe.vcard
+		if v == "" {
+			fetched, ferr := s.proton.GetContactVCard(ctx, pe.id)
+			if ferr != nil {
+				s.log.Warn("force: get proton vcard failed", "uid", uid, "name", name, "err", ferr)
+				return nil
+			}
+			v = fetched
+		}
+		if putErr := s.carddav.PutContact(ctx, uid, v); putErr != nil {
+			s.log.Warn("force: carddav create failed", "uid", uid, "name", name, "err", putErr)
 			return nil
 		}
-		s.log.Info("force created proton→carddav", "uid", uid)
-		return s.saveBases(ctx, uid, "", pe.vcard, pe.vcard)
+		s.log.Info("force created proton→carddav", "uid", uid, "name", name)
+		return s.saveBases(ctx, uid, "", v, v)
 
 	case !hasP && hasC:
 		newID, createErr := s.proton.CreateContact(ctx, ce.vcard)
 		if createErr != nil {
-			s.log.Warn("force: proton create failed", "uid", uid, "err", createErr)
+			s.log.Warn("force: proton create failed", "uid", uid, "name", name, "err", createErr)
 			return nil
 		}
-		s.log.Info("force created carddav→proton", "uid", uid)
+		s.log.Info("force created carddav→proton", "uid", uid, "name", name)
 		return s.saveBases(ctx, uid, ce.etag, s.refetchProton(ctx, newID, ce.vcard), ce.vcard)
 
 	default: // both present — repair Proton from CardDAV
 		if updErr := s.proton.UpdateContact(ctx, pe.id, ce.vcard); updErr != nil {
-			s.log.Warn("force: proton update failed", "uid", uid, "err", updErr)
+			s.log.Warn("force: proton update failed", "uid", uid, "name", name, "err", updErr)
 			return nil
 		}
-		s.log.Info("force repaired proton from carddav", "uid", uid)
+		s.log.Info("force repaired proton from carddav", "uid", uid, "name", name)
 		return s.saveBases(ctx, uid, ce.etag, s.refetchProton(ctx, pe.id, ce.vcard), ce.vcard)
 	}
 }
@@ -524,8 +563,12 @@ func (s *Syncer) protonByUID(ctx context.Context) (map[string]contactSide, error
 			continue
 		}
 		uid := extractUID(v, ct.ID)
-		out[uid] = contactSide{id: ct.ID, vcard: v}
-		s.log.Debug("fetched proton contact", "n", i+1, "of", len(contacts), "uid", uid)
+		name := ct.Name
+		if name == "" {
+			name = extractFN(v)
+		}
+		out[uid] = contactSide{id: ct.ID, vcard: v, name: name}
+		s.log.Debug("fetched proton contact", "n", i+1, "of", len(contacts), "uid", uid, "name", name)
 	}
 	s.log.Info("fetched proton contacts", "count", len(out))
 	return out, nil
@@ -546,7 +589,7 @@ func (s *Syncer) carddavIndex(ctx context.Context) (map[string]contactSide, erro
 			continue
 		}
 		str := buf.String()
-		out[extractUID(str, obj.Path)] = contactSide{etag: obj.ETag, vcard: str}
+		out[extractUID(str, obj.Path)] = contactSide{etag: obj.ETag, vcard: str, name: extractFN(str)}
 	}
 	return out, nil
 }
@@ -561,4 +604,18 @@ func extractUID(raw, fallback string) string {
 		return f.Value
 	}
 	return fallback
+}
+
+// extractFN returns the formatted name (FN) from a vCard, for logging. Empty if
+// absent or unparseable.
+func extractFN(raw string) string {
+	dec := vcard.NewDecoder(strings.NewReader(raw))
+	card, err := dec.Decode()
+	if err != nil {
+		return ""
+	}
+	if f := card.Get(vcard.FieldFormattedName); f != nil {
+		return f.Value
+	}
+	return ""
 }
