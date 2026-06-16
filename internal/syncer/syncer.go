@@ -424,6 +424,8 @@ func (s *Syncer) ForceContacts(ctx context.Context, uids []string, all bool) err
 			targets = append(targets, uid)
 		}
 	}
+	s.log.Info("resync: forcing contacts",
+		"targets", len(targets), "proton", len(protonIdx), "carddav", len(carddavIdx))
 
 	for _, uid := range targets {
 		select {
@@ -498,14 +500,19 @@ func (s *Syncer) saveBases(ctx context.Context, uid, etag, protonBase, carddavBa
 }
 
 // protonByUID fetches and decodes every Proton contact, keyed by vCard UID.
+// Each contact's card is a separate API call, so on large address books this is
+// the slow part of a run (it is also rate-limited); progress is logged.
 func (s *Syncer) protonByUID(ctx context.Context) (map[string]contactSide, error) {
 	contacts, err := s.proton.ListContacts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list proton contacts: %w", err)
 	}
 
+	s.log.Info("fetching proton contact cards (rate-limited; may take a while)",
+		"count", len(contacts))
+
 	out := make(map[string]contactSide, len(contacts))
-	for _, ct := range contacts {
+	for i, ct := range contacts {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -516,8 +523,11 @@ func (s *Syncer) protonByUID(ctx context.Context) (map[string]contactSide, error
 			s.log.Warn("skip proton contact: get vcard failed", "contact_id", ct.ID, "err", vcErr)
 			continue
 		}
-		out[extractUID(v, ct.ID)] = contactSide{id: ct.ID, vcard: v}
+		uid := extractUID(v, ct.ID)
+		out[uid] = contactSide{id: ct.ID, vcard: v}
+		s.log.Debug("fetched proton contact", "n", i+1, "of", len(contacts), "uid", uid)
 	}
+	s.log.Info("fetched proton contacts", "count", len(out))
 	return out, nil
 }
 
