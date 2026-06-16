@@ -40,6 +40,20 @@ func runSync(cmd *cobra.Command, _ []string) error {
 
 // runSyncWithConfig is the shared implementation used by both sync and run.
 func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	return withSyncer(ctx, cfg, log, func(s *syncer.Syncer) error {
+		log.Info("starting sync", "direction", cfg.Sync.Direction)
+		if syncErr := s.Sync(ctx); syncErr != nil {
+			return fmt.Errorf("sync: %w", syncErr)
+		}
+		log.Info("sync complete")
+		return nil
+	})
+}
+
+// withSyncer opens the database, resumes the Proton session, connects to
+// CardDAV, builds a Syncer, and hands it to fn — the shared setup for the sync,
+// run, and resync commands.
+func withSyncer(ctx context.Context, cfg *config.Config, log *slog.Logger, fn func(*syncer.Syncer) error) error {
 	sqlDB, err := db.Open(ctx, cfg.Database.Path)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -86,12 +100,7 @@ func runSyncWithConfig(ctx context.Context, cfg *config.Config, log *slog.Logger
 	s := syncer.New(protonClient, carddavClient, sqlDB, log, dir,
 		parseConflictPolicy(cfg.Sync.Conflict), cfg.Sync.MaxNewProtonContactsPerRun)
 
-	log.Info("starting sync", "direction", cfg.Sync.Direction)
-	if syncErr := s.Sync(ctx); syncErr != nil {
-		return fmt.Errorf("sync: %w", syncErr)
-	}
-	log.Info("sync complete")
-	return nil
+	return fn(s)
 }
 
 func parseSyncDirection(s string) syncer.Direction {

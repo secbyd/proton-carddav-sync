@@ -203,27 +203,44 @@ func buildContactCards(kr *crypto.KeyRing, vcardStr string) (proton.Cards, error
 		signed.SetValue(govcard.FieldFormattedName, deriveFN(parsed))
 	}
 
-	// Proton requires every EMAIL to belong to a unique vCard group (it attaches
-	// per-email settings to the group). Assign item1, item2, … to any ungrouped
-	// emails.
+	// Proton requires every EMAIL to sit in its own unique vCard group (it
+	// attaches per-email settings to the group). The group must not be shared
+	// with any other property or another email, or the API rejects the contact
+	// ("Contact email must have a unique group").
 	//
-	// Apple/Synology label emails with a separate `itemN.X-ABLabel` property.
-	// Because that label lives in its own (encrypted) property, Proton renders
-	// the email's type from the group ordinal + label ("item1" -> "1home"). Fold
-	// the label into the EMAIL's own TYPE parameter and drop the X-ABLabel so
-	// Proton shows a clean "Home"/"Work".
+	// Apple/Synology also label emails with a separate `itemN.X-ABLabel`
+	// property; since that label lives in its own (encrypted) property, Proton
+	// renders the type from the group ordinal + label ("item1" -> "1home"). So
+	// fold the label into the EMAIL's own TYPE parameter, drop the X-ABLabel, and
+	// assign each email a fresh group that collides with nothing.
 	labels := abLabelsByGroup(parsed)
+	nonEmailGroups := groupsUsedExcept(parsed, govcard.FieldEmail)
 	consumed := map[string]bool{}
-	for i, f := range signed[govcard.FieldEmail] {
-		if f.Group == "" {
-			f.Group = fmt.Sprintf("item%d", i+1)
-		}
-		if lbl := labels[f.Group]; lbl != "" {
+	assigned := map[string]bool{}
+	counter := 1
+	for _, f := range signed[govcard.FieldEmail] {
+		orig := f.Group
+		if lbl := labels[orig]; lbl != "" {
 			setEmailType(f, lbl)
-			consumed[f.Group] = true
+			consumed[orig] = true
 		} else {
 			dropGenericType(f)
 		}
+		// Keep the original group only if it is unique; otherwise assign the next
+		// free itemN not used by any other property or email.
+		g := orig
+		if g == "" || nonEmailGroups[g] || assigned[g] {
+			for {
+				cand := fmt.Sprintf("item%d", counter)
+				counter++
+				if !nonEmailGroups[cand] && !assigned[cand] {
+					g = cand
+					break
+				}
+			}
+		}
+		f.Group = g
+		assigned[g] = true
 	}
 	// Remove the X-ABLabels we folded into TYPE (labels for other groups — e.g.
 	// phones — stay in the encrypted card where they render fine).
@@ -286,6 +303,23 @@ func encodeCard(card govcard.Card) (string, error) {
 		return "", fmt.Errorf("encode card vcard: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// groupsUsedExcept returns the set of vCard groups used by properties other than
+// exceptName — the groups an email must avoid to stay unique.
+func groupsUsedExcept(card govcard.Card, exceptName string) map[string]bool {
+	out := map[string]bool{}
+	for name, fields := range card {
+		if name == exceptName {
+			continue
+		}
+		for _, f := range fields {
+			if f.Group != "" {
+				out[f.Group] = true
+			}
+		}
+	}
+	return out
 }
 
 // abLabelKey returns the actual map key for the X-ABLabel property (vCard

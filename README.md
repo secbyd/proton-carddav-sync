@@ -118,6 +118,23 @@ Remaining limitations:
   contact never had (e.g. a contact that had no phone at all) may not push to
   Proton until another Proton-modelled field on that contact also changes.
 
+### Forcing / repairing a contact (`resync`)
+
+A normal sync skips contacts that are missing from one side (to avoid
+resurrecting deletions) and only writes Proton on a content change. To override
+that — e.g. recreate a contact you deleted on one side, or rewrite a contact
+whose Proton cards are stale/malformed — use `resync`:
+
+```bash
+proton-carddav-sync resync --uid <uid>            # one contact
+proton-carddav-sync resync --uid <a> --uid <b>    # several
+proton-carddav-sync resync --all                  # every contact
+```
+
+For each UID: if it exists on only one side it is **created on the other**; if it
+exists on both, the **CardDAV version is re-pushed to Proton**, rebuilding the
+encrypted/signed cards. In a container: `… resync --uid <uid> --config /config/config.yaml`.
+
 ## Proton rate limits & account safety
 
 > **⚠️ Read this before your first sync of a large address book.**

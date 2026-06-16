@@ -316,7 +316,10 @@ func (s *Syncer) reconcile(ctx context.Context) error {
 			}
 			newID, createErr := s.proton.CreateContact(ctx, ce.vcard)
 			if createErr != nil {
-				return fmt.Errorf("create proton contact %q: %w", uid, createErr)
+				// Skip this contact rather than aborting the whole sync; it has
+				// no base record, so it's retried next run.
+				s.log.Warn("skip contact: proton create failed", "uid", uid, "err", createErr)
+				continue
 			}
 			newProton++
 			protonBase := ce.vcard
@@ -372,7 +375,10 @@ func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide
 	}
 	if protonChanged {
 		if updErr := s.proton.UpdateContact(ctx, p.id, merged); updErr != nil {
-			return fmt.Errorf("update proton contact %q: %w", uid, updErr)
+			// Skip this contact rather than aborting the whole sync; the base is
+			// left unchanged so it's retried next run.
+			s.log.Warn("skip contact: proton update failed", "uid", uid, "err", updErr)
+			return nil
 		}
 		s.log.Info("merged proton↔carddav → proton", "uid", uid)
 		if refetched, refErr := s.proton.GetContactVCard(ctx, p.id); refErr != nil {
@@ -383,6 +389,98 @@ func (s *Syncer) reconcileBoth(ctx context.Context, uid string, p, c contactSide
 	}
 
 	return s.saveBases(ctx, uid, c.etag, protonBase, merged)
+}
+
+// ForceContacts force-reconciles specific contacts (or all, when all is true),
+// bypassing the normal "don't resurrect a contact missing from one side" and
+// "only write Proton on a content change" guards. For each UID it:
+//   - creates the contact on whichever side is missing it, or
+//   - if it exists on both, re-pushes the CardDAV version to Proton (rebuilding
+//     the encrypted/signed cards) to repair a stale or malformed contact.
+//
+// Per-contact failures are logged and skipped so one bad contact does not abort
+// the run.
+func (s *Syncer) ForceContacts(ctx context.Context, uids []string, all bool) error {
+	protonIdx, err := s.protonByUID(ctx)
+	if err != nil {
+		return err
+	}
+	carddavIdx, err := s.carddavIndex(ctx)
+	if err != nil {
+		return err
+	}
+
+	targets := uids
+	if all {
+		set := make(map[string]struct{}, len(protonIdx)+len(carddavIdx))
+		for uid := range protonIdx {
+			set[uid] = struct{}{}
+		}
+		for uid := range carddavIdx {
+			set[uid] = struct{}{}
+		}
+		targets = targets[:0]
+		for uid := range set {
+			targets = append(targets, uid)
+		}
+	}
+
+	for _, uid := range targets {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := s.forceOne(ctx, uid, protonIdx[uid], carddavIdx[uid], protonIdx, carddavIdx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Syncer) forceOne(ctx context.Context, uid string, pe, ce contactSide, protonIdx, carddavIdx map[string]contactSide) error {
+	_, hasP := protonIdx[uid]
+	_, hasC := carddavIdx[uid]
+
+	switch {
+	case !hasP && !hasC:
+		s.log.Warn("force: contact not found on either side", "uid", uid)
+		return nil
+
+	case hasP && !hasC:
+		if putErr := s.carddav.PutContact(ctx, uid, pe.vcard); putErr != nil {
+			s.log.Warn("force: carddav create failed", "uid", uid, "err", putErr)
+			return nil
+		}
+		s.log.Info("force created proton→carddav", "uid", uid)
+		return s.saveBases(ctx, uid, "", pe.vcard, pe.vcard)
+
+	case !hasP && hasC:
+		newID, createErr := s.proton.CreateContact(ctx, ce.vcard)
+		if createErr != nil {
+			s.log.Warn("force: proton create failed", "uid", uid, "err", createErr)
+			return nil
+		}
+		s.log.Info("force created carddav→proton", "uid", uid)
+		return s.saveBases(ctx, uid, ce.etag, s.refetchProton(ctx, newID, ce.vcard), ce.vcard)
+
+	default: // both present — repair Proton from CardDAV
+		if updErr := s.proton.UpdateContact(ctx, pe.id, ce.vcard); updErr != nil {
+			s.log.Warn("force: proton update failed", "uid", uid, "err", updErr)
+			return nil
+		}
+		s.log.Info("force repaired proton from carddav", "uid", uid)
+		return s.saveBases(ctx, uid, ce.etag, s.refetchProton(ctx, pe.id, ce.vcard), ce.vcard)
+	}
+}
+
+// refetchProton returns Proton's normalised vCard for id after a write, falling
+// back to sent when the refetch fails.
+func (s *Syncer) refetchProton(ctx context.Context, id, sent string) string {
+	if v, err := s.proton.GetContactVCard(ctx, id); err == nil {
+		return v
+	}
+	return sent
 }
 
 // saveBases persists the per-side bases (and a hash for quick equality) for uid.

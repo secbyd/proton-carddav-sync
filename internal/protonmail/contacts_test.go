@@ -68,6 +68,42 @@ func TestBuildContactCardsEmailLabels(t *testing.T) {
 	}
 }
 
+func TestBuildContactCardsUniqueEmailGroups(t *testing.T) {
+	kr := testKeyRing(t)
+
+	// An ADR already uses item1; ungrouped emails must NOT be assigned item1
+	// (Proton: "Contact email must have a unique group").
+	const src = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:X\r\n" +
+		"item1.ADR;TYPE=home:;;Street;City;;;NL\r\nitem1.X-ABLabel:home\r\n" +
+		"EMAIL:a@example.com\r\nEMAIL:b@example.com\r\n" +
+		"item1.EMAIL:c@example.com\r\n" + // collides with ADR's group
+		"UID:u\r\nEND:VCARD\r\n"
+
+	cards, err := buildContactCards(kr, src)
+	if err != nil {
+		t.Fatalf("buildContactCards: %v", err)
+	}
+	signed, _ := cards.Get(proton.CardTypeSigned)
+	sc, err := govcard.NewDecoder(strings.NewReader(signed.Data)).Decode()
+	if err != nil {
+		t.Fatalf("decode signed: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, f := range sc[govcard.FieldEmail] {
+		if f.Group == "" {
+			t.Errorf("email %s has no group", f.Value)
+		}
+		if f.Group == "item1" {
+			t.Errorf("email %s reuses item1 (already used by ADR)", f.Value)
+		}
+		if seen[f.Group] {
+			t.Errorf("duplicate email group %q", f.Group)
+		}
+		seen[f.Group] = true
+	}
+}
+
 func TestBuildContactCards(t *testing.T) {
 	kr := testKeyRing(t)
 
