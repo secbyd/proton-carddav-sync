@@ -15,3 +15,6 @@ secrets.env
 .DS_Store
 
 # Note: vendor/ is intentionally committed (carries a patched go-proton-api).
+.vscode/
+
+context.md
