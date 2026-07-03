@@ -3,7 +3,7 @@
 @@ -18,8 +18,21 @@ func (c *Client) GetAddresses(ctx context.Context) ([]Address, error) {
  		return nil, err
  	}
-
+ 
 -	slices.SortFunc(res.Addresses, func(a, b Address) bool {
 -		return a.Order < b.Order
 +	// PATCH(secbyd/proton-carddav-sync): Go 1.21 changed slices.SortFunc to
@@ -22,5 +22,5 @@
 +			return 0
 +		}
  	})
-
+ 
  	return res.Addresses, nil

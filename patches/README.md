@@ -38,9 +38,17 @@ If you ever need to regenerate `vendor/`:
 
 ```bash
 go mod vendor
-git apply patches/go-proton-api-address-sortfunc.patch  # or hand-apply the diff
+# The patches are -p1 diffs rooted at the go-proton-api module, so apply them
+# with --directory pointing at the vendored module (a bare `git apply` from the
+# repo root targets ./address.go and fails):
+for p in patches/*.patch; do
+  git apply --directory=vendor/github.com/ProtonMail/go-proton-api "$p"
+done
 go build -mod=vendor ./...                               # verify
 ```
+
+This is exactly what the scheduled `.github/workflows/security-scan.yml` job
+does automatically after it upgrades a vulnerable dependency.
 
 ## go-proton-api-auth-v3.patch
 
