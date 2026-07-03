@@ -1,0 +1,404 @@
+name: Security scan & auto-patch
+
+# Scheduled vulnerability scan with automatic remediation.
+#
+# Two independent jobs run weekly (and on manual dispatch):
+#
+# 1. image — rebuilds the image fresh (pulling the latest base images and
+#    patched OS packages; the rebuild itself IS the fix for base/OS CVEs), scans
+#    the candidate with Trivy, and — if the rebuild reduces fixable HIGH/CRITICAL
+#    vulnerabilities and the test suite passes — pushes the patched multi-arch
+#    image to Docker Hub. Image CVEs with no upstream fix are filed as an issue.
+#
+# 2. go-modules — scans the vendored Go dependencies with Trivy, upgrades any
+#    module with a fixable HIGH/CRITICAL CVE, updates go.sum, regenerates
+#    vendor/ and RE-APPLIES the committed patches (see patches/README.md), then
+#    verifies build + tests and opens a pull request. The go-proton-api module
+#    is intentionally excluded (it is pinned and patched); if it is ever flagged
+#    the workflow files an issue instead.
+#
+# Publishing reuses the same secrets as docker.yml:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+# The pull request uses the built-in GITHUB_TOKEN; the repo setting
+# "Allow GitHub Actions to create and approve pull requests" must be enabled
+# (Settings → Actions → General → Workflow permissions).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_push:
+        description: "Rebuild and push the image even if no fixable CVEs are found"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
+env:
+  TRIVY_NO_PROGRESS: "true"
+  SEVERITY: "HIGH,CRITICAL"
+  # The pinned, hand-patched dependency — never auto-bump it (it would orphan
+  # the committed vendor/ patches). Reported via an issue if ever flagged.
+  PINNED_DEP: "github.com/ProtonMail/go-proton-api"
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════
+  # 1. Image: rebuild (applies base/OS patches), scan, test, push
+  # ════════════════════════════════════════════════════════════════════════
+  image:
+    name: Scan, rebuild & push image
+    runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/proton-carddav-sync
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (for linux/arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gcc (required by go-sqlite3 CGO)
+        run: sudo apt-get install -y gcc
+
+      - name: Install Trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Rebuild candidate (amd64, loaded locally) — pulls fresh base ────────
+      - name: Build candidate image (applies base/OS patches)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          pull: true # always re-pull base images so OS patches land
+          tags: local/proton-carddav-sync:candidate
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan candidate image
+        id: scan_candidate
+        run: |
+          trivy image --quiet --ignore-unfixed --severity "$SEVERITY" \
+            --format json -o candidate.json local/proton-carddav-sync:candidate
+          count=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' candidate.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Candidate fixable $SEVERITY vulnerabilities: $count"
+          trivy image --quiet --ignore-unfixed --severity "$SEVERITY" \
+            --format table local/proton-carddav-sync:candidate || true
+
+      - name: Scan published :latest
+        id: scan_published
+        if: env.DOCKERHUB_USERNAME != ''
+        run: |
+          if docker pull "$IMAGE:latest"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            trivy image --quiet --ignore-unfixed --severity "$SEVERITY" \
+              --format json -o published.json "$IMAGE:latest"
+            count=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' published.json)
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+            echo "Published fixable $SEVERITY vulnerabilities: $count"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "No published :latest image to compare against."
+          fi
+
+      - name: Decide whether to push
+        id: decide
+        run: |
+          force="${{ github.event.inputs.force_push }}"
+          pub="${{ steps.scan_published.outputs.count }}"; pub="${pub:-0}"
+          cand="${{ steps.scan_candidate.outputs.count }}"; cand="${cand:-0}"
+          exists="${{ steps.scan_published.outputs.exists }}"
+          push=false; reason=""
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            reason="no Docker Hub credentials configured — scan only"
+          elif [ "$force" = "true" ]; then
+            push=true; reason="manual force_push requested"
+          elif [ "$exists" != "true" ]; then
+            push=true; reason="no published :latest yet — establishing baseline"
+          elif [ "$cand" -lt "$pub" ]; then
+            push=true; reason="rebuild fixes $((pub - cand)) vulnerabilit(ies): $pub -> $cand"
+          else
+            reason="no improvement ($pub -> $cand) — nothing to push"
+          fi
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Decision: push=$push ($reason)"
+
+      - name: Run tests
+        if: steps.decide.outputs.push == 'true'
+        run: go test -mod=vendor -race -count=1 ./...
+
+      - name: Image metadata
+        if: steps.decide.outputs.push == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+            type=schedule,pattern=patched-{{date 'YYYYMMDD'}}
+
+      - name: Build and push patched image
+        if: steps.decide.outputs.push == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Open or update image-CVE issue
+        if: success() && steps.scan_candidate.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "A freshly rebuilt image still contains fixable \`$SEVERITY\` vulnerabilities"
+            echo "(no upstream OS fix is available yet, or they live in the Go binary)."
+            echo
+            echo "_Last run: [\`${GITHUB_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})_"
+            echo
+            echo "| Target | Package | CVE | Severity | Installed | Fixed |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            jq -r '
+              .Results[]? | select(.Vulnerabilities) | .Target as $t |
+              .Vulnerabilities[] |
+              "| \($t) | \(.PkgName) | \(.VulnerabilityID) | \(.Severity) | \(.InstalledVersion) | \(.FixedVersion // "-") |"
+            ' candidate.json
+            echo
+            echo "Push decision this run: **${{ steps.decide.outputs.push }}** — ${{ steps.decide.outputs.reason }}"
+          } > image-report.md
+
+          gh label create security --color B60205 --description "Automated security scan" 2>/dev/null || true
+          title="🔒 Security: image vulnerabilities with no rebuild fix"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body-file image-report.md
+            echo "Updated existing issue #$num"
+          else
+            gh issue create --title "$title" --body-file image-report.md --label security
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Image scan summary"
+            echo
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Published :latest fixable | ${{ steps.scan_published.outputs.count || 'n/a' }} |"
+            echo "| Candidate (rebuilt) fixable | ${{ steps.scan_candidate.outputs.count }} |"
+            echo "| Pushed | ${{ steps.decide.outputs.push }} |"
+            echo "| Reason | ${{ steps.decide.outputs.reason }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ════════════════════════════════════════════════════════════════════════
+  # 2. Go modules: upgrade vulnerable deps, re-vendor + re-patch, open PR
+  # ════════════════════════════════════════════════════════════════════════
+  go-modules:
+    name: Auto-patch Go modules
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gcc (required by go-sqlite3 CGO)
+        run: sudo apt-get install -y gcc
+
+      - name: Install Trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Scan Go modules
+        id: scan
+        run: |
+          trivy fs --quiet --scanners vuln --ignore-unfixed --severity "$SEVERITY" \
+            --format json -o gomod.json .
+          trivy fs --quiet --scanners vuln --ignore-unfixed --severity "$SEVERITY" \
+            --format table . || true
+
+          # module<TAB>fixedVersion for every fixable finding
+          jq -r '
+            .Results[]?.Vulnerabilities[]?
+            | select(.FixedVersion != null and .FixedVersion != "")
+            | "\(.PkgName)\t\(.FixedVersion)"' gomod.json | sort -u > all-fixes.tsv || true
+
+          # Auto-fixable = everything except the pinned, hand-patched dependency.
+          grep -v "^${PINNED_DEP}" all-fixes.tsv > fixes.tsv || true
+          grep    "^${PINNED_DEP}" all-fixes.tsv > pinned-fixes.tsv || true
+
+          count=$(wc -l < fixes.tsv | tr -d ' ')
+          pinned=$(wc -l < pinned-fixes.tsv | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          echo "Auto-fixable Go modules: $count | pinned-dep findings: $pinned"
+          cat fixes.tsv || true
+
+      - name: Apply upgrades, re-vendor, re-apply patches
+        id: apply
+        if: success() && steps.scan.outputs.count != '0'
+        env:
+          GOFLAGS: -mod=mod # ignore vendor/ while editing go.mod; we re-vendor after
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r pkg fixed; do
+            [ -z "${pkg:-}" ] && continue
+            ver="${fixed%%,*}"           # first listed fixed version
+            ver="$(echo "$ver" | tr -d ' ')"
+            case "$ver" in v*) ;; *) ver="v$ver";; esac
+            echo "::group::go get $pkg@$ver"
+            go get "$pkg@$ver"
+            echo "::endgroup::"
+          done < fixes.tsv
+
+          go mod tidy
+
+          # Regenerate vendor/ from the cache, then re-apply the committed patches
+          # (go mod vendor reverts them — see patches/README.md). The patches are
+          # -p1 diffs rooted at the go-proton-api module, so apply them with
+          # --directory pointing at the vendored module.
+          go mod vendor
+          patch_dir="vendor/${PINNED_DEP}"
+          for p in patches/*.patch; do
+            echo "Applying $p -> $patch_dir"
+            git apply --directory="$patch_dir" "$p"
+          done
+
+          # PR body
+          {
+            echo "Automated upgrade of Go modules with known fixable \`$SEVERITY\` CVEs."
+            echo
+            echo "| Module | Upgraded to (fixed version) |"
+            echo "| --- | --- |"
+            awk -F'\t' '{print "| " $1 " | " $2 " |"}' fixes.tsv
+            echo
+            echo "\`go.sum\` was updated, \`vendor/\` regenerated, and the committed patches in"
+            echo "\`patches/\` were re-applied (see \`patches/README.md\`). Build + race tests pass."
+            echo
+            echo "_Generated by the scheduled security-scan workflow, run ${GITHUB_RUN_ID}._"
+          } > pr-body.md
+
+      - name: Verify build & tests
+        if: success() && steps.scan.outputs.count != '0'
+        run: |
+          go build -mod=vendor ./...
+          go test -mod=vendor -race -count=1 ./...
+
+      - name: Create pull request
+        if: success() && steps.scan.outputs.count != '0'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: security/go-module-bumps
+          delete-branch: true
+          commit-message: "fix(deps): patch vulnerable Go modules [automated]"
+          title: "🔒 Security: patch vulnerable Go modules"
+          body-path: pr-body.md
+          labels: security
+          # Commit only the dependency changes — not the scan's temp artifacts.
+          add-paths: |
+            go.mod
+            go.sum
+            vendor
+
+      # If the auto-fix path fails (e.g. a patch no longer applies after a bump),
+      # surface it instead of failing silently.
+      - name: Report auto-fix failure
+        if: failure() && steps.scan.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "⚠️ Automatic Go-module patching **failed** — manual action required."
+            echo
+            echo "_Run: [\`${GITHUB_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})_"
+            echo
+            echo "Likely cause: a committed \`vendor/\` patch no longer applies after the"
+            echo "upgrade, or a bumped module broke the build/tests. Resolve by hand following"
+            echo "\`patches/README.md\`."
+            echo
+            echo "Modules attempted:"
+            echo
+            echo "| Module | Fixed version |"
+            echo "| --- | --- |"
+            awk -F'\t' '{print "| " $1 " | " $2 " |"}' fixes.tsv
+          } > gomod-fail.md
+          gh label create security --color B60205 --description "Automated security scan" 2>/dev/null || true
+          title="🔒 Security: automatic Go-module patch failed"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body-file gomod-fail.md
+          else
+            gh issue create --title "$title" --body-file gomod-fail.md --label security
+          fi
+
+      # The pinned go-proton-api can't be auto-bumped; report it for a manual fix.
+      - name: Report pinned-dependency CVEs
+        if: steps.scan.outputs.pinned != '' && steps.scan.outputs.pinned != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "The pinned, hand-patched \`${PINNED_DEP}\` has fixable \`$SEVERITY\` CVEs."
+            echo "It is excluded from automatic upgrades because that would orphan the"
+            echo "committed \`vendor/\` patches. Fix manually — ideally by publishing a"
+            echo "forked release and adding a \`replace\` directive (see \`patches/README.md\`)."
+            echo
+            echo "_Run: [\`${GITHUB_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})_"
+            echo
+            echo "| Module | Fixed version |"
+            echo "| --- | --- |"
+            awk -F'\t' '{print "| " $1 " | " $2 " |"}' pinned-fixes.tsv
+          } > pinned-report.md
+          gh label create security --color B60205 --description "Automated security scan" 2>/dev/null || true
+          title="🔒 Security: pinned dependency (go-proton-api) needs manual patch"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body-file pinned-report.md
+          else
+            gh issue create --title "$title" --body-file pinned-report.md --label security
+          fi
