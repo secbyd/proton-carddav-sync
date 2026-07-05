@@ -9,6 +9,8 @@ name: Security scan & auto-patch
 #    the candidate with Trivy, and — if the rebuild reduces fixable HIGH/CRITICAL
 #    vulnerabilities and the test suite passes — pushes the patched multi-arch
 #    image to Docker Hub. Image CVEs with no upstream fix are filed as an issue.
+#    It then prunes Docker Hub, keeping only the newest 4 tags (latest is always
+#    protected) — DOCKERHUB_TOKEN needs "Read, Write, Delete" scope for this.
 #
 # 2. go-modules — scans the vendored Go dependencies with Trivy, upgrades any
 #    module with a fixable HIGH/CRITICAL CVE, updates go.sum, regenerates
@@ -180,6 +182,58 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Housekeeping: Docker Hub keeps every tag forever, so latest/sha-*/patched-*
+      # accumulate. Keep only the newest KEEP tags (latest is always protected).
+      # DOCKERHUB_TOKEN must have delete permission (Docker Hub → Account Settings
+      # → Personal access tokens → scope "Read, Write, Delete"); otherwise the
+      # DELETE calls return 403 and are skipped with a warning.
+      - name: Prune old Docker Hub tags (keep newest 4)
+        if: always() && env.DOCKERHUB_USERNAME != ''
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          KEEP: "4"
+        run: |
+          set -uo pipefail
+          jwt=$(curl -fsS -H "Content-Type: application/json" \
+            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login/ | jq -r '.token // empty')
+          if [ -z "$jwt" ]; then
+            echo "::warning::Could not obtain a Docker Hub API token — skipping tag prune."
+            exit 0
+          fi
+
+          # All tag names, newest first.
+          mapfile -t tags < <(curl -fsS -H "Authorization: JWT $jwt" \
+            "https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100&ordering=-last_updated" \
+            | jq -r '.results[].name')
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "No tags found; nothing to prune."
+            exit 0
+          fi
+          echo "Found ${#tags[@]} tag(s): ${tags[*]}"
+
+          i=0; deleted=0
+          for t in "${tags[@]}"; do
+            i=$((i + 1))
+            if [ "$i" -le "$KEEP" ]; then
+              echo "keep   $t"
+              continue
+            fi
+            if [ "$t" = "latest" ]; then
+              echo "keep   $t (protected pointer)"
+              continue
+            fi
+            echo "delete $t"
+            if curl -fsS -X DELETE -H "Authorization: JWT $jwt" \
+              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${t}/"; then
+              deleted=$((deleted + 1))
+            else
+              echo "::warning::Failed to delete tag '$t' (token may lack delete scope)."
+            fi
+          done
+          echo "Pruned $deleted tag(s); kept the newest $KEEP (+ latest)."
+          echo "- Pruned **$deleted** old Docker Hub tag(s); kept newest $KEEP." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open or update image-CVE issue
         if: success() && steps.scan_candidate.outputs.count != '0'
